@@ -2,13 +2,15 @@ name: Build Windows RustDesk (GUI + MSI)
 
 on:
   push:
-    branches:
-      - master
+    branches: [ master ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: windows-2022
+
+    env:
+      VCPKG_ROOT: ${{ runner.temp }}\vcpkg
 
     steps:
       - name: Checkout source
@@ -16,48 +18,63 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Rust toolchain
+      # ------------ Rust Toolchain ------------
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
-      - name: Install MSVC build tools
+      # ------------ Install MSVC Build Tools ------------
+      - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Install Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Clone vcpkg
+      # ------------ Patch vcpkg.json (Add opus) ------------
+      - name: Ensure opus exists in vcpkg.json
         shell: pwsh
         run: |
-          git clone https://github.com/microsoft/vcpkg.git "$env:TEMP/vcpkg"
-          & "$env:TEMP/vcpkg/bootstrap-vcpkg.bat"
-          echo "VCPKG_ROOT=$env:TEMP/vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Append
+          if (Test-Path "vcpkg.json") {
+            $json = Get-Content "vcpkg.json" | ConvertFrom-Json
+            if (-not ($json.dependencies -contains "opus")) {
+                Write-Host "Adding opus to vcpkg.json"
+                $json.dependencies += "opus"
+                $json | ConvertTo-Json -Depth 10 | Out-File "vcpkg.json"
+            }
+          }
 
-      # 기본 빌드 (hwcodec OFF → GitHub Actions 100% 성공)
-      - name: Build Windows EXE
+      # ------------ Clone & Bootstrap vcpkg ------------
+      - name: Install vcpkg
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg $env:VCPKG_ROOT
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat"
+
+      # ------------ Build Windows EXE ------------
+      - name: Build Windows GUI (no HWCodec)
         shell: pwsh
         run: |
           python build.py
 
+      # ------------ Install WiX Toolset ------------
       - name: Install WiX Toolset
         shell: pwsh
         run: |
-          iwr -useb "https://wixtoolset.org/releases/v3.11.2/wix311-binaries.zip" -OutFile wix.zip
-          Expand-Archive wix.zip -DestinationPath "C:\wix"
-          echo "WIX=C:\wix" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $wix = "$env:ProgramFiles\WixToolsetV3"
+          mkdir $wix -Force | Out-Null
+          Invoke-WebRequest -Uri "https://wixtoolset.org/releases/v3.11.2/wix311-binaries.zip" -OutFile wix.zip
+          Expand-Archive wix.zip -DestinationPath $wix
+          echo "$wix" | Out-File -Append $env:GITHUB_PATH
 
-      - name: Build MSI installer
+      # ------------ Build MSI Installer ------------
+      - name: Build Windows MSI
         shell: pwsh
         run: |
           powershell ./build.ps1 -Configuration Release
 
-      - name: Upload Artifacts
+      # ------------ Upload Artifacts (v4) ------------
+      - name: Upload EXE And MSI
         uses: actions/upload-artifact@v4
         with:
-          name: Windows-Build
+          name: rustdesk-windows-build
           path: |
-            target\release\*.exe
+            target\release\rustdesk.exe
             target\release\*.msi
