@@ -29,45 +29,20 @@ jobs:
     # -------------------------------------------------------
     # 3. Setup MSVC (필수)
     # -------------------------------------------------------
-    - name: Setup MSVC
+    - name: Setup MSVC Developer Command Prompt
       uses: ilammy/msvc-dev-cmd@v1
 
     # -------------------------------------------------------
-    # 4. Install vcpkg
+    # ⭐ 4. Just run RustDesk's own build script
+    #    (This automatically installs vcpkg + ffmpeg + hwcodec)
     # -------------------------------------------------------
-    - name: Clone vcpkg
-      run: |
-        set VCPKG_ROOT=%TEMP%\vcpkg
-        git clone https://github.com/microsoft/vcpkg.git %TEMP%\vcpkg
-        %TEMP%\vcpkg\bootstrap-vcpkg.bat
-      shell: cmd
-
-    - name: Install vcpkg dependencies
+    - name: Build RustDesk (EXE)
       shell: pwsh
-      run: |
-        $env:VCPKG_ROOT="$env:TEMP/vcpkg"
-        $pkgs = @(
-          "ffmpeg:x64-windows-static",
-          "libvpx:x64-windows-static",
-          "libyuv:x64-windows-static",
-          "libjpeg-turbo:x64-windows-static",
-          "opus:x64-windows-static",
-          "aom:x64-windows-static",
-          "mfx-dispatch:x64-windows-static"
-        )
-        foreach ($pkg in $pkgs) {
-          & "$env:VCPKG_ROOT\vcpkg.exe" install $pkg --clean-after-build
-        }
-
-    # -------------------------------------------------------
-    # 5. Build RustDesk (HWCodec 포함)
-    # -------------------------------------------------------
-    - name: Build RustDesk
       run: |
         python build.py --hwcodec
 
     # -------------------------------------------------------
-    # 6. Install WiX Toolset
+    # 5. Install WiX Toolset
     # -------------------------------------------------------
     - name: Install WiX
       shell: pwsh
@@ -77,7 +52,7 @@ jobs:
         Expand-Archive wix.zip -DestinationPath C:\wix
 
     # -------------------------------------------------------
-    # 7. Build MSI installer
+    # 6. Build MSI installer
     # -------------------------------------------------------
     - name: Build MSI
       shell: pwsh
@@ -86,7 +61,7 @@ jobs:
         ./build.ps1 -Configuration Release
 
     # -------------------------------------------------------
-    # 8. Upload artifacts (EXE + MSI)
+    # 7. Upload artifacts
     # -------------------------------------------------------
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
