@@ -1,59 +1,99 @@
-name: Build Windows RustDesk (GUI + MSI)
+name: Build Windows RustDesk (GUI + HWCodec + MSI)
 
 on:
   push:
-    branches:
-      - master
+    branches: [ master ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: windows-2022
 
+    env:
+      VCPKG_ROOT: ${{ runner.temp }}\vcpkg
+
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
+    # -------------------------------------------------------
+    # 1. Checkout
+    # -------------------------------------------------------
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+    # -------------------------------------------------------
+    # 2. Install Rust
+    # -------------------------------------------------------
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
 
-      - name: Install MSVC build tools
-        uses: microsoft/setup-msbuild@v2
+    # -------------------------------------------------------
+    # 3. Setup MSVC Environment (필수)
+    # -------------------------------------------------------
+    - name: Setup MSVC
+      uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Clone vcpkg
-        shell: pwsh
-        run: |
-          git clone https://github.com/microsoft/vcpkg.git $env:USERPROFILE/vcpkg
-          $env:VCPKG_ROOT="$env:USERPROFILE/vcpkg"
-          echo "VCPKG_ROOT=$env:VCPKG_ROOT" >> $env:GITHUB_ENV
-          & $env:VCPKG_ROOT/bootstrap-vcpkg.bat
+    # -------------------------------------------------------
+    # 4. Install vcpkg and dependencies
+    # -------------------------------------------------------
+    - name: Clone vcpkg
+      run: |
+        git clone https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
+        $env:VCPKG_ROOT\bootstrap-vcpkg.bat
 
-      - name: Build Windows EXE (GUI)
-        shell: pwsh
-        run: |
-          python build.py --hwcodec
+    - name: Install vcpkg dependencies
+      shell: pwsh
+      run: |
+        $env:PATH="$env:VCPKG_ROOT;$env:PATH"
+        $pkgs = @(
+          "ffmpeg:x64-windows-static",
+          "libvpx:x64-windows-static",
+          "libyuv:x64-windows-static",
+          "libjpeg-turbo:x64-windows-static",
+          "opus:x64-windows-static",
+          "aom:x64-windows-static",
+          "mfx-dispatch:x64-windows-static"
+        )
+        foreach ($pkg in $pkgs) {
+          & "$env:VCPKG_ROOT\vcpkg.exe" install $pkg --clean-after-build
+        }
 
-      - name: Install WiX Toolset
-        shell: pwsh
-        run: |
-          $env:WIX="C:\wix"
-          echo "WIX=C:\wix" >> $env:GITHUB_ENV
-          iwr -useb https://wixtoolset.org/releases/v3.11.2/wix311-binaries.zip -OutFile wix.zip
-          Expand-Archive wix.zip -DestinationPath $env:WIX
+    # -------------------------------------------------------
+    # 5. Build RustDesk GUI (HWCodec 포함)
+    # -------------------------------------------------------
+    - name: Build RustDesk (GUI + HWCodec)
+      run: |
+        python build.py --hwcodec
 
-      - name: Build MSI installer
-        shell: pwsh
-        run: |
-          powershell ./build.ps1 -Configuration Release
+    # -------------------------------------------------------
+    # 6. Install WiX Toolset for MSI build
+    # -------------------------------------------------------
+    - name: Install WiX Toolset
+      run: |
+        mkdir C:\wix
+        curl -L https://wixtoolset.org/downloads/v3.11.2/wix311-binaries.zip -o wix.zip
+        tar -xf wix.zip -C C:\wix
+      env:
+        WIX: C:\wix
 
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: Windows-Build
-          path: |
-            target\release\rustdesk.exe
-            target\release\*.msi
+    # -------------------------------------------------------
+    # 7. Build MSI installer
+    # -------------------------------------------------------
+    - name: Build MSI
+      shell: pwsh
+      run: |
+        $env:Path += ";C:\wix"
+        ./build.ps1 -Configuration Release
+
+    # -------------------------------------------------------
+    # 8. Upload artifacts (EXE + MSI)
+    # -------------------------------------------------------
+    - name: Upload Build Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: rustdesk-windows-gui
+        path: |
+          target\release\rustdesk.exe
+          target\release\*.msi
