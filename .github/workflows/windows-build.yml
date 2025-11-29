@@ -1,4 +1,4 @@
-name: Windows GUI + MSI Release Build
+name: Build Windows RustDesk (GUI + MSI)
 
 on:
   push:
@@ -13,17 +13,17 @@ jobs:
       VCPKG_ROOT: C:\Users\runneradmin\vcpkg
 
     steps:
-      # -----------------------------
-      # 0. Checkout Repository
-      # -----------------------------
-      - name: Checkout repo with submodules
+      # --------------------------------------------------
+      # 1. Checkout Repository
+      # --------------------------------------------------
+      - name: Checkout repository (with submodules)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: recursive
+          submodules: true
 
       # --------------------------------------------------
-      # 1. 자동 버전 증가 (VERSION 파일)
+      # 2. Version Auto Increase
       # --------------------------------------------------
       - name: Auto increment version
         id: versioning
@@ -35,30 +35,28 @@ jobs:
 
           OLD_VERSION=$(cat VERSION)
           NEW_VERSION=$((OLD_VERSION + 1))
-
           echo $NEW_VERSION > VERSION
 
-          echo "new_version=$NEW_VERSION" >> $GITHUB_ENV
           echo "tag_name=v$NEW_VERSION" >> $GITHUB_ENV
+          echo "new_version=$NEW_VERSION" >> $GITHUB_ENV
 
-      - name: Commit updated version
+      - name: Commit updated VERSION file
         shell: bash
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          git add VERSION || true
+          git add VERSION
           git commit -m "Auto bump version to ${{ env.new_version }}" || true
           git push || true
 
-      # -----------------------------
-      # 2. Install Rust
-      # -----------------------------
+      # --------------------------------------------------
+      # 3. Install Rust toolchain
+      # --------------------------------------------------
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-          components: rustfmt, clippy
 
       - name: Install MSVC Build Tools
         uses: microsoft/setup-msbuild@v2
@@ -66,25 +64,22 @@ jobs:
       - name: Add Windows target
         run: rustup target add x86_64-pc-windows-msvc
 
-      # -----------------------------
-      # 3. Install vcpkg
-      # -----------------------------
+      # --------------------------------------------------
+      # 4. Install vcpkg dependencies
+      # --------------------------------------------------
       - name: Clone vcpkg
-        shell: pwsh
+        shell: powershell
         run: |
           git clone https://github.com/microsoft/vcpkg.git $env:USERPROFILE/vcpkg
           & "$env:USERPROFILE/vcpkg/bootstrap-vcpkg.bat"
 
       - name: Export VCPKG_ROOT
-        shell: pwsh
+        shell: powershell
         run: |
           echo "VCPKG_ROOT=$env:USERPROFILE/vcpkg" >> $env:GITHUB_ENV
 
-      # -----------------------------
-      # 4. Install required libraries
-      # -----------------------------
-      - name: Install required vcpkg libs (classic mode)
-        shell: pwsh
+      - name: Install required vcpkg libs
+        shell: powershell
         run: |
           $env:VCPKG_ROOT="$env:USERPROFILE/vcpkg"
           & "$env:VCPKG_ROOT/vcpkg" install opus:x64-windows-static --classic
@@ -93,43 +88,35 @@ jobs:
           & "$env:VCPKG_ROOT/vcpkg" install libjpeg-turbo:x64-windows-static --classic
           & "$env:VCPKG_ROOT/vcpkg" install aom:x64-windows-static --classic
 
-      # -----------------------------
-      # 5. Build RustDesk (GUI 포함)
-      # -----------------------------
-      - name: Build RustDesk GUI
-        run: |
-          cargo xtask build --release --target x86_64-pc-windows-msvc
+      # --------------------------------------------------
+      # 5. Build Windows GUI + MSI installer
+      # --------------------------------------------------
+      - name: Build RustDesk (GUI)
+        run: cargo build --release --target x86_64-pc-windows-msvc
 
-      # -----------------------------
-      # 6. Build MSI installer
-      # -----------------------------
-      - name: Build MSI Installer
+      - name: Build MSI installer
+        shell: powershell
         run: |
-          cargo xtask installer --release --target x86_64-pc-windows-msvc
+          cargo xtask installer --windows --release --target x86_64-pc-windows-msvc
 
-      # -----------------------------
-      # 7. Upload artifacts
-      # -----------------------------
-      - name: Upload EXE + MSI Artifacts
+      # --------------------------------------------------
+      # 6. Upload artifacts + GitHub Release
+      # --------------------------------------------------
+      - name: Upload EXE + MSI artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: rustdesk-windows-release
+          name: rustdesk-windows-${{ env.tag_name }}
           path: |
             target/x86_64-pc-windows-msvc/release/rustdesk.exe
-            target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+            target/x86_64-pc-windows-msvc/release/*.msi
 
-      # -----------------------------
-      # 8. Create GitHub Release
-      # -----------------------------
-      - name: Create GitHub Release + Upload Files
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ env.tag_name }}
-          name: "Windows Release ${{ env.tag_name }}"
-          draft: false
-          prerelease: false
+          name: "RustDesk Windows Build - ${{ env.tag_name }}"
           files: |
             target/x86_64-pc-windows-msvc/release/rustdesk.exe
-            target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+            target/x86_64-pc-windows-msvc/release/*.msi
