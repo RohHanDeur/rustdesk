@@ -2,7 +2,8 @@ name: Build Windows RustDesk (GUI + MSI)
 
 on:
   push:
-    branches: [ master ]
+    branches:
+      - master
   workflow_dispatch:
 
 jobs:
@@ -10,63 +11,58 @@ jobs:
     runs-on: windows-2022
 
     steps:
-    # -------------------------------------------------------
-    # 1. Checkout
-    # -------------------------------------------------------
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        submodules: recursive
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-    # -------------------------------------------------------
-    # 2. Install Rust
-    # -------------------------------------------------------
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        components: rustfmt, clippy
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
-    # -------------------------------------------------------
-    # 3. Setup MSVC (필수)
-    # -------------------------------------------------------
-    - name: Setup MSVC Developer Command Prompt
-      uses: ilammy/msvc-dev-cmd@v1
+      - name: Install MSVC build tools
+        uses: microsoft/setup-msbuild@v2
 
-    # -------------------------------------------------------
-    # ⭐ 4. Just run RustDesk's own build script
-    #    (This automatically installs vcpkg + ffmpeg + hwcodec)
-    # -------------------------------------------------------
-    - name: Build RustDesk (EXE)
-      shell: pwsh
-      run: |
-        python build.py --hwcodec
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-    # -------------------------------------------------------
-    # 5. Install WiX Toolset
-    # -------------------------------------------------------
-    - name: Install WiX
-      shell: pwsh
-      run: |
-        mkdir C:\wix
-        curl -L https://wixtoolset.org/downloads/v3.11.2/wix311-binaries.zip -o wix.zip
-        Expand-Archive wix.zip -DestinationPath C:\wix
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          pip install -r requirements-build.txt
 
-    # -------------------------------------------------------
-    # 6. Build MSI installer
-    # -------------------------------------------------------
-    - name: Build MSI
-      shell: pwsh
-      run: |
-        $env:Path += ";C:\wix"
-        ./build.ps1 -Configuration Release
+      - name: Clone vcpkg
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git "$env:TEMP/vcpkg"
+          $env:VCPKG_ROOT = "$env:TEMP/vcpkg"
+          "$env:VCPKG_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+          & "$env:TEMP/vcpkg/bootstrap-vcpkg.bat"
 
-    # -------------------------------------------------------
-    # 7. Upload artifacts
-    # -------------------------------------------------------
-    - name: Upload Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: rustdesk-windows-build
-        path: |
-          target\release\rustdesk.exe
-          target\release\*.msi
+      - name: Build Windows EXE (no hwcodec)
+        shell: pwsh
+        run: |
+          python build.py
+
+      - name: Install WiX Toolset
+        shell: pwsh
+        run: |
+          iwr -useb "https://wixtoolset.org/releases/v3.11.2/wix311-binaries.zip" -OutFile wix.zip
+          Expand-Archive wix.zip -DestinationPath "C:\wix"
+          echo "WIX=C:\wix" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build MSI installer
+        shell: pwsh
+        run: |
+          powershell ./build.ps1 -Configuration Release
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-Build
+          path: |
+            target\release\*.exe
+            target\release\*.msi
