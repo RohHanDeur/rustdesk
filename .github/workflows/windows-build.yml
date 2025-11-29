@@ -14,7 +14,7 @@ jobs:
 
     steps:
       # --------------------------------------------------
-      # 1. Checkout Repository
+      # 0. Checkout repository
       # --------------------------------------------------
       - name: Checkout repository (with submodules)
         uses: actions/checkout@v4
@@ -23,7 +23,7 @@ jobs:
           submodules: true
 
       # --------------------------------------------------
-      # 2. Version Auto Increase
+      # 1. Auto-increment version
       # --------------------------------------------------
       - name: Auto increment version
         id: versioning
@@ -35,37 +35,44 @@ jobs:
 
           OLD_VERSION=$(cat VERSION)
           NEW_VERSION=$((OLD_VERSION + 1))
+
           echo $NEW_VERSION > VERSION
-
-          echo "tag_name=v$NEW_VERSION" >> $GITHUB_ENV
           echo "new_version=$NEW_VERSION" >> $GITHUB_ENV
+          echo "tag_name=v$NEW_VERSION" >> $GITHUB_ENV
 
-      - name: Commit updated VERSION file
+          echo "Version updated: $OLD_VERSION → $NEW_VERSION"
+
+      - name: Commit updated version
         shell: bash
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          git add VERSION
+          git add VERSION || true
           git commit -m "Auto bump version to ${{ env.new_version }}" || true
-          git push || true
 
       # --------------------------------------------------
-      # 3. Install Rust toolchain
+      # 2. Install Python (needed for build.py)
       # --------------------------------------------------
-      - name: Install stable Rust
+      - name: Install Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      # --------------------------------------------------
+      # 3. Install Rust + MSVC
+      # --------------------------------------------------
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
+          components: rustfmt, clippy
 
       - name: Install MSVC Build Tools
         uses: microsoft/setup-msbuild@v2
 
-      - name: Add Windows target
-        run: rustup target add x86_64-pc-windows-msvc
-
       # --------------------------------------------------
-      # 4. Install vcpkg dependencies
+      # 4. Install vcpkg (official Windows dependency builder)
       # --------------------------------------------------
       - name: Clone vcpkg
         shell: powershell
@@ -78,45 +85,47 @@ jobs:
         run: |
           echo "VCPKG_ROOT=$env:USERPROFILE/vcpkg" >> $env:GITHUB_ENV
 
-      - name: Install required vcpkg libs
+      # --------------------------------------------------
+      # 5. Install RustDesk dependencies (vcpkg manifest mode)
+      # --------------------------------------------------
+      - name: Install vcpkg dependencies
         shell: powershell
+        working-directory: .
         run: |
           $env:VCPKG_ROOT="$env:USERPROFILE/vcpkg"
-          & "$env:VCPKG_ROOT/vcpkg" install opus:x64-windows-static --classic
-          & "$env:VCPKG_ROOT/vcpkg" install libvpx:x64-windows-static --classic
-          & "$env:VCPKG_ROOT/vcpkg" install libyuv:x64-windows-static --classic
-          & "$env:VCPKG_ROOT/vcpkg" install libjpeg-turbo:x64-windows-static --classic
-          & "$env:VCPKG_ROOT/vcpkg" install aom:x64-windows-static --classic
+          & "$env:VCPKG_ROOT/vcpkg" install --triplet x64-windows
 
       # --------------------------------------------------
-      # 5. Build Windows GUI + MSI installer
+      # 6. Build RustDesk GUI + MSI (official method)
       # --------------------------------------------------
-      - name: Build RustDesk (GUI)
-        run: cargo build --release --target x86_64-pc-windows-msvc
-
-      - name: Build MSI installer
+      - name: Build Windows GUI + MSI installer
         shell: powershell
         run: |
-          cargo xtask installer --windows --release --target x86_64-pc-windows-msvc
+          python build.py --msi
 
       # --------------------------------------------------
-      # 6. Upload artifacts + GitHub Release
+      # 7. Upload build artifacts
       # --------------------------------------------------
-      - name: Upload EXE + MSI artifacts
+      - name: Upload artifacts (EXE + MSI)
         uses: actions/upload-artifact@v4
         with:
-          name: rustdesk-windows-${{ env.tag_name }}
+          name: rustdesk-windows-build
           path: |
             target/x86_64-pc-windows-msvc/release/rustdesk.exe
-            target/x86_64-pc-windows-msvc/release/*.msi
+            *.msi
 
-      - name: Create GitHub Release
+      # --------------------------------------------------
+      # 8. Create GitHub Release
+      # --------------------------------------------------
+      - name: Create GitHub Release and upload files
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ env.tag_name }}
           name: "RustDesk Windows Build - ${{ env.tag_name }}"
+          draft: false
+          prerelease: false
           files: |
             target/x86_64-pc-windows-msvc/release/rustdesk.exe
-            target/x86_64-pc-windows-msvc/release/*.msi
+            *.msi
