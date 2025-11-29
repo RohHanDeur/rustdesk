@@ -9,9 +9,6 @@ jobs:
   build:
     runs-on: windows-2022
 
-    env:
-      VCPKG_ROOT: ${{ runner.temp }}\vcpkg
-
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -28,16 +25,16 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      # ------------ Patch vcpkg.json (Add opus) ------------
+      # ------------ Patch vcpkg.json (add opus) ------------
       - name: Ensure opus exists in vcpkg.json
         shell: pwsh
         run: |
           if (Test-Path "vcpkg.json") {
             $json = Get-Content "vcpkg.json" | ConvertFrom-Json
             if (-not ($json.dependencies -contains "opus")) {
-                Write-Host "Adding opus to vcpkg.json"
-                $json.dependencies += "opus"
-                $json | ConvertTo-Json -Depth 10 | Out-File "vcpkg.json"
+              Write-Host "Adding opus to vcpkg.json"
+              $json.dependencies += "opus"
+              $json | ConvertTo-Json -Depth 10 | Out-File "vcpkg.json"
             }
           }
 
@@ -45,11 +42,14 @@ jobs:
       - name: Install vcpkg
         shell: pwsh
         run: |
-          git clone https://github.com/microsoft/vcpkg $env:VCPKG_ROOT
-          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat"
+          $vcpkgPath = Join-Path $env:RUNNER_TEMP "vcpkg"
+          Write-Host "VCPKG path = $vcpkgPath"
+          git clone https://github.com/microsoft/vcpkg $vcpkgPath
+          & "$vcpkgPath\bootstrap-vcpkg.bat"
+          echo "VCPKG_ROOT=$vcpkgPath" | Out-File -Append $env:GITHUB_ENV
 
-      # ------------ Build Windows EXE ------------
-      - name: Build Windows GUI (no HWCodec)
+      # ------------ Build Windows EXE (no HWCodec) ------------
+      - name: Build Windows GUI
         shell: pwsh
         run: |
           python build.py
@@ -70,8 +70,8 @@ jobs:
         run: |
           powershell ./build.ps1 -Configuration Release
 
-      # ------------ Upload Artifacts (v4) ------------
-      - name: Upload EXE And MSI
+      # ------------ Upload Artifacts ------------
+      - name: Upload EXE + MSI
         uses: actions/upload-artifact@v4
         with:
           name: rustdesk-windows-build
