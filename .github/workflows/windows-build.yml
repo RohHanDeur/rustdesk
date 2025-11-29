@@ -12,7 +12,7 @@ jobs:
 
     steps:
       - name: Checkout source
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: recursive
 
@@ -25,27 +25,33 @@ jobs:
         uses: microsoft/setup-msbuild@v2
 
       - name: Clone vcpkg
+        shell: pwsh
         run: |
           git clone https://github.com/microsoft/vcpkg.git $env:USERPROFILE/vcpkg
           $env:VCPKG_ROOT="$env:USERPROFILE/vcpkg"
-          $env:VCPKG_ROOT | Out-File -FilePath $env:GITHUB_ENV -Append
-          $env:USERPROFILE/vcpkg/bootstrap-vcpkg.bat
+          echo "VCPKG_ROOT=$env:VCPKG_ROOT" >> $env:GITHUB_ENV
+          & $env:VCPKG_ROOT/bootstrap-vcpkg.bat
 
       - name: Build Windows EXE (GUI)
+        shell: pwsh
         run: |
           python build.py --hwcodec
 
       - name: Install WiX Toolset
+        shell: pwsh
         run: |
+          $env:WIX="C:\wix"
+          echo "WIX=C:\wix" >> $env:GITHUB_ENV
           iwr -useb https://wixtoolset.org/releases/v3.11.2/wix311-binaries.zip -OutFile wix.zip
           Expand-Archive wix.zip -DestinationPath $env:WIX
 
       - name: Build MSI installer
+        shell: pwsh
         run: |
           powershell ./build.ps1 -Configuration Release
 
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: Windows-Build
           path: |
