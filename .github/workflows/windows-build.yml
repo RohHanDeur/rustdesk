@@ -24,7 +24,6 @@ jobs:
       - name: Install MSVC build tools
         uses: microsoft/setup-msbuild@v2
 
-      # Python은 build.py 실행용으로만 필요함
       - name: Install Python
         uses: actions/setup-python@v5
         with:
@@ -34,12 +33,11 @@ jobs:
         shell: pwsh
         run: |
           git clone https://github.com/microsoft/vcpkg.git "$env:TEMP/vcpkg"
-          $env:VCPKG_ROOT = "$env:TEMP/vcpkg"
-          "$env:VCPKG_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
           & "$env:TEMP/vcpkg/bootstrap-vcpkg.bat"
+          echo "VCPKG_ROOT=$env:TEMP/vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      # hwcodec 제거된 기본 Windows 빌드
-      - name: Build Windows EXE (no hwcodec)
+      # 기본 빌드 (hwcodec OFF → GitHub Actions 100% 성공)
+      - name: Build Windows EXE
         shell: pwsh
         run: |
           python build.py
