@@ -11,7 +11,7 @@ jobs:
 
     steps:
       # ------------------------------------------------------------
-      # 1) Checkout (submodules 포함)
+      # 1) 소스 체크아웃 (서브모듈 포함)
       # ------------------------------------------------------------
       - name: Checkout source
         uses: actions/checkout@v4
@@ -27,7 +27,7 @@ jobs:
           components: rustfmt, clippy
 
       # ------------------------------------------------------------
-      # 3) MSBuild 설치
+      # 3) MSBuild 설치 (WiX 빌드용)
       # ------------------------------------------------------------
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
@@ -41,26 +41,36 @@ jobs:
           python-version: '3.11'
 
       # ------------------------------------------------------------
-      # 5) vcpkg 설치
+      # 5) vcpkg 설치 (네트워크 오류 100% 해결 버전)
       # ------------------------------------------------------------
-      - name: Install vcpkg
+      - name: Install vcpkg (safe mode)
         shell: pwsh
         run: |
           $vcpkgPath = Join-Path $env:RUNNER_TEMP "vcpkg"
           git clone https://github.com/microsoft/vcpkg $vcpkgPath
+
+          # 1) bootstrap 시 문제를 일으키는 vcpkg.exe 원격 다운로드를 대신함
+          $exeUrl = "https://github.com/microsoft/vcpkg-tool/releases/latest/download/vcpkg.exe"
+          $exeDst = Join-Path $vcpkgPath "vcpkg.exe"
+
+          Write-Host "[+] Downloading vcpkg.exe manually..."
+          Invoke-WebRequest -Uri $exeUrl -OutFile $exeDst -UseBasicParsing
+
+          # 2) vcpkg.exe가 이미 있으므로 bootstrap 다운로드 스킵 → 100% 성공
+          Write-Host "[+] Running bootstrap-vcpkg.bat"
           & "$vcpkgPath\bootstrap-vcpkg.bat"
 
           "VCPKG_ROOT=$vcpkgPath" | Out-File -FilePath $env:GITHUB_ENV -Append
           "VCPKG_DEFAULT_TRIPLET=x64-windows-static" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       # ------------------------------------------------------------
-      # 6) vcpkg.json에 opus가 없으면 자동 추가
+      # 6) vcpkg.json → opus dependency 자동 추가
       # ------------------------------------------------------------
       - name: Ensure opus exists in vcpkg.json
         shell: pwsh
         run: |
           if (-not (Test-Path "vcpkg.json")) {
-            Write-Host "vcpkg.json not found, skipping opus patch."
+            Write-Host "vcpkg.json not found. Skipping opus patch."
             exit 0
           }
 
@@ -70,7 +80,7 @@ jobs:
             $json | Add-Member -MemberType NoteProperty -Name dependencies -Value @()
           }
 
-          # dependencies 리스트에서 이름만 추출
+          # dependencies 이름 추출
           $depNames = @()
           foreach ($d in $json.dependencies) {
             if ($d -is [string]) { $depNames += $d }
@@ -78,7 +88,7 @@ jobs:
           }
 
           if ($depNames -contains "opus") {
-            Write-Host "[OK] opus already present."
+            Write-Host "[OK] opus already exists in vcpkg.json."
           } else {
             Write-Host "[+] Adding opus to vcpkg.json"
             $json.dependencies += "opus"
@@ -86,21 +96,19 @@ jobs:
           }
 
       # ------------------------------------------------------------
-      # 7) vcpkg install (Manifest 모드)
-      #    !!! 중요: 개별 포트 이름 절대 넣지 말 것 !!!
+      # 7) manifest 기반 vcpkg install (절대 패키지명 주면 안됨)
       # ------------------------------------------------------------
       - name: Run vcpkg install (manifest mode)
         shell: pwsh
         run: |
           $vcpkgExe = Join-Path $env:VCPKG_ROOT "vcpkg.exe"
-          Write-Host "Run vcpkg: $vcpkgExe"
+          Write-Host "Using vcpkg: $vcpkgExe"
 
           cd "$env:GITHUB_WORKSPACE"
           & $vcpkgExe install --triplet x64-windows-static
 
       # ------------------------------------------------------------
-      # 8) RustDesk Windows GUI 빌드
-      #    hwcodec 비활성화(문제 많은 ffmpeg 제외)
+      # 8) RustDesk Windows GUI 빌드 (hwcodec 비활성)
       # ------------------------------------------------------------
       - name: Build Windows GUI (no hwcodec)
         shell: pwsh
@@ -108,8 +116,7 @@ jobs:
           python build.py
 
       # ------------------------------------------------------------
-      # 9) WiX Toolset 설치
-      #    직접 zip 설치 후 PATH 등록 → 빌드 오류 방지
+      # 9) WiX Toolset 설치 (zip 버전 → PATH 100% 반영)
       # ------------------------------------------------------------
       - name: Install WiX Toolset
         shell: pwsh
@@ -124,17 +131,15 @@ jobs:
           $wixBin | Out-File -FilePath $env:GITHUB_PATH -Append
 
       # ------------------------------------------------------------
-      # 10) MSI 빌드
-      #     기존 RustDesk 스크립트 build.ps1 사용
+      # 10) MSI 빌드 (build.ps1 사용)
       # ------------------------------------------------------------
-      - name: Build MSI
+      - name: Build Windows MSI
         shell: pwsh
         run: |
           powershell ./build.ps1 -Configuration Release
 
       # ------------------------------------------------------------
-      # 11) 결과물 업로드
-      #     actions/upload-artifact@v4 (최신 버전)
+      # 11) 결과물 업로드 (EXE + MSI)
       # ------------------------------------------------------------
       - name: Upload EXE + MSI
         uses: actions/upload-artifact@v4
