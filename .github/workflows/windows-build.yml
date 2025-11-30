@@ -10,51 +10,60 @@ jobs:
     runs-on: windows-2022
 
     steps:
+      # ------------------------------------------------------------
+      # Checkout
+      # ------------------------------------------------------------
       - name: Checkout source
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      # ------------ Rust Toolchain ------------
+      # ------------------------------------------------------------
+      # Install Rust
+      # ------------------------------------------------------------
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
-      # ------------ Install MSVC Build Tools ------------
+      # ------------------------------------------------------------
+      # Setup MSBuild (for WiX)
+      # ------------------------------------------------------------
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      # ------------ Patch vcpkg.json (add opus) ------------
-      - name: Ensure opus exists in vcpkg.json
-        shell: pwsh
-        run: |
-          if (Test-Path "vcpkg.json") {
-            $json = Get-Content "vcpkg.json" | ConvertFrom-Json
-            if (-not ($json.dependencies -contains "opus")) {
-              Write-Host "Adding opus to vcpkg.json"
-              $json.dependencies += "opus"
-              $json | ConvertTo-Json -Depth 10 | Out-File "vcpkg.json"
-            }
-          }
-
-      # ------------ Clone & Bootstrap vcpkg ------------
+      # ------------------------------------------------------------
+      # Install vcpkg
+      # ------------------------------------------------------------
       - name: Install vcpkg
         shell: pwsh
         run: |
           $vcpkgPath = Join-Path $env:RUNNER_TEMP "vcpkg"
-          Write-Host "VCPKG path = $vcpkgPath"
           git clone https://github.com/microsoft/vcpkg $vcpkgPath
           & "$vcpkgPath\bootstrap-vcpkg.bat"
           echo "VCPKG_ROOT=$vcpkgPath" | Out-File -Append $env:GITHUB_ENV
 
-      # ------------ Build Windows EXE (no HWCodec) ------------
+      # ------------------------------------------------------------
+      # Install Opus (force correct triplet)
+      # This FIXES the "opus_multistream.h not found" error
+      # ------------------------------------------------------------
+      - name: Install Opus library
+        shell: pwsh
+        run: |
+          $vcpkg = "$env:VCPKG_ROOT\vcpkg.exe"
+          & $vcpkg install opus --triplet x64-windows
+
+      # ------------------------------------------------------------
+      # Build RustDesk (no HWCodec)
+      # ------------------------------------------------------------
       - name: Build Windows GUI
         shell: pwsh
         run: |
           python build.py
 
-      # ------------ Install WiX Toolset ------------
+      # ------------------------------------------------------------
+      # Install WiX Toolset (for MSI creation)
+      # ------------------------------------------------------------
       - name: Install WiX Toolset
         shell: pwsh
         run: |
@@ -64,13 +73,17 @@ jobs:
           Expand-Archive wix.zip -DestinationPath $wix
           echo "$wix" | Out-File -Append $env:GITHUB_PATH
 
-      # ------------ Build MSI Installer ------------
+      # ------------------------------------------------------------
+      # Build MSI Installer
+      # ------------------------------------------------------------
       - name: Build Windows MSI
         shell: pwsh
         run: |
           powershell ./build.ps1 -Configuration Release
 
-      # ------------ Upload Artifacts ------------
+      # ------------------------------------------------------------
+      # Upload artifacts (EXE + MSI)
+      # ------------------------------------------------------------
       - name: Upload EXE + MSI
         uses: actions/upload-artifact@v4
         with:
