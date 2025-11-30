@@ -41,7 +41,7 @@ jobs:
           python-version: "3.11"
 
       # ------------------------------------------------------------
-      # 5) vcpkg 설치 (bootstrap timeout 문제 해결 버전)
+      # 5) vcpkg 설치 (bootstrap timeout 방지)
       # ------------------------------------------------------------
       - name: Install vcpkg (safe mode)
         shell: pwsh
@@ -49,14 +49,14 @@ jobs:
           $vcpkgPath = Join-Path $env:RUNNER_TEMP "vcpkg"
           git clone https://github.com/microsoft/vcpkg $vcpkgPath
 
-          # vcpkg.exe 직접 다운로드 (bootstrap 네트워크 실패 방지)
+          # vcpkg.exe 직접 다운로드
           $exeUrl = "https://github.com/microsoft/vcpkg-tool/releases/latest/download/vcpkg.exe"
           $exeDst = Join-Path $vcpkgPath "vcpkg.exe"
 
-          Write-Host "[+] Downloading vcpkg.exe manually..."
+          Write-Host "[+] Downloading vcpkg.exe..."
           Invoke-WebRequest -Uri $exeUrl -OutFile $exeDst -UseBasicParsing
 
-          Write-Host "[+] Running bootstrap-vcpkg.bat (no download)"
+          Write-Host "[+] Running bootstrap (no network downloads)"
           & "$vcpkgPath\bootstrap-vcpkg.bat"
 
           "VCPKG_ROOT=$vcpkgPath" | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -88,13 +88,13 @@ jobs:
           if ($depNames -contains "opus") {
             Write-Host "[OK] opus already exists."
           } else {
-            Write-Host "[+] Adding opus to dependencies"
+            Write-Host "[+] Adding opus to dependencies."
             $json.dependencies += "opus"
             $json | ConvertTo-Json -Depth 10 | Set-Content "vcpkg.json" -Encoding UTF8
           }
 
       # ------------------------------------------------------------
-      # 7) manifest 기반 vcpkg install (강제 모드 사용)
+      # 7) manifest 기반 vcpkg install (강제 모드)
       # ------------------------------------------------------------
       - name: Run vcpkg install (strict manifest mode)
         shell: pwsh
@@ -108,7 +108,7 @@ jobs:
               --x-install-root="$env:VCPKG_ROOT/installed"
 
       # ------------------------------------------------------------
-      # 7.1) include/lib 경로 적용 (magnum-opus 빌드 오류 방지)
+      # 8) include/lib PATH 추가 (magnum-opus 빌드 실패 방지)
       # ------------------------------------------------------------
       - name: Add vcpkg include/lib to PATH
         shell: pwsh
@@ -117,7 +117,7 @@ jobs:
           echo "$env:VCPKG_ROOT\installed\x64-windows-static\lib" | Out-File -FilePath $env:GITHUB_PATH -Append
 
       # ------------------------------------------------------------
-      # 8) confy 깨진 리비전 해결
+      # 9) confy 깨진 리비전 해결
       # ------------------------------------------------------------
       - name: Fix confy broken revision
         shell: pwsh
@@ -126,15 +126,15 @@ jobs:
           cargo update -p confy || cargo update
 
       # ------------------------------------------------------------
-      # 9) RustDesk Windows GUI 빌드 (hwcodec 비활성)
+      # 10) RustDesk Windows GUI 빌드 (portable 비활성화)
       # ------------------------------------------------------------
-      - name: Build Windows GUI (no hwcodec)
+      - name: Build Windows GUI (skip portable)
         shell: pwsh
         run: |
-          python build.py
+          python build.py --no-portable
 
       # ------------------------------------------------------------
-      # 10) WiX Toolset 설치 (PATH 문제 해결)
+      # 11) WiX Toolset 설치
       # ------------------------------------------------------------
       - name: Install WiX Toolset
         shell: pwsh
@@ -149,7 +149,7 @@ jobs:
           $wixBin | Out-File -FilePath $env:GITHUB_PATH -Append
 
       # ------------------------------------------------------------
-      # 11) MSI 빌드
+      # 12) MSI 빌드
       # ------------------------------------------------------------
       - name: Build Windows MSI
         shell: pwsh
@@ -157,7 +157,7 @@ jobs:
           powershell ./build.ps1 -Configuration Release
 
       # ------------------------------------------------------------
-      # 12) 결과물 업로드
+      # 13) 결과물 업로드
       # ------------------------------------------------------------
       - name: Upload EXE + MSI
         uses: actions/upload-artifact@v4
