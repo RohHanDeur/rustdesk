@@ -11,7 +11,7 @@ jobs:
 
     steps:
       # ------------------------------------------------------------
-      # 1) 소스 체크아웃 (서브모듈 포함)
+      # 1) Git Checkout (submodules 포함)
       # ------------------------------------------------------------
       - name: Checkout source
         uses: actions/checkout@v4
@@ -33,15 +33,15 @@ jobs:
         uses: microsoft/setup-msbuild@v2
 
       # ------------------------------------------------------------
-      # 4) Python 설치 (build.py 실행용)
+      # 4) Python 설치
       # ------------------------------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       # ------------------------------------------------------------
-      # 5) vcpkg 설치 (네트워크 오류 안전 모드)
+      # 5) vcpkg 설치 (bootstrap timeout 문제 해결 버전)
       # ------------------------------------------------------------
       - name: Install vcpkg (safe mode)
         shell: pwsh
@@ -49,14 +49,14 @@ jobs:
           $vcpkgPath = Join-Path $env:RUNNER_TEMP "vcpkg"
           git clone https://github.com/microsoft/vcpkg $vcpkgPath
 
-          # vcpkg.exe를 먼저 직접 다운로드해서 bootstrap 시 네트워크 오류 방지
+          # vcpkg.exe 직접 다운로드 (bootstrap 네트워크 실패 방지)
           $exeUrl = "https://github.com/microsoft/vcpkg-tool/releases/latest/download/vcpkg.exe"
           $exeDst = Join-Path $vcpkgPath "vcpkg.exe"
 
           Write-Host "[+] Downloading vcpkg.exe manually..."
           Invoke-WebRequest -Uri $exeUrl -OutFile $exeDst -UseBasicParsing
 
-          Write-Host "[+] Running bootstrap-vcpkg.bat"
+          Write-Host "[+] Running bootstrap-vcpkg.bat (no download)"
           & "$vcpkgPath\bootstrap-vcpkg.bat"
 
           "VCPKG_ROOT=$vcpkgPath" | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -86,34 +86,43 @@ jobs:
           }
 
           if ($depNames -contains "opus") {
-            Write-Host "[OK] opus already exists in vcpkg.json."
+            Write-Host "[OK] opus already exists."
           } else {
-            Write-Host "[+] Adding opus to vcpkg.json"
+            Write-Host "[+] Adding opus to dependencies"
             $json.dependencies += "opus"
             $json | ConvertTo-Json -Depth 10 | Set-Content "vcpkg.json" -Encoding UTF8
           }
 
       # ------------------------------------------------------------
-      # 7) manifest 기반 vcpkg install
+      # 7) manifest 기반 vcpkg install (강제 모드 사용)
       # ------------------------------------------------------------
-      - name: Run vcpkg install (manifest mode)
+      - name: Run vcpkg install (strict manifest mode)
         shell: pwsh
         run: |
-          $vcpkgExe = Join-Path $env:VCPKG_ROOT "vcpkg.exe"
-          Write-Host "Using vcpkg: $vcpkgExe"
-
+          $vcpkg = Join-Path $env:VCPKG_ROOT "vcpkg.exe"
           cd "$env:GITHUB_WORKSPACE"
-          & $vcpkgExe install --triplet x64-windows-static
+
+          & $vcpkg install `
+              --triplet x64-windows-static `
+              --x-manifest-root="$env:GITHUB_WORKSPACE" `
+              --x-install-root="$env:VCPKG_ROOT/installed"
 
       # ------------------------------------------------------------
-      # 8) confy git 리비전 깨짐 대응: cargo update
-      #    (RustDesk 공식 FAQ에서도 권장하는 해결책)
+      # 7.1) include/lib 경로 적용 (magnum-opus 빌드 오류 방지)
       # ------------------------------------------------------------
-      - name: Fix broken confy git revision (cargo update)
+      - name: Add vcpkg include/lib to PATH
+        shell: pwsh
+        run: |
+          echo "$env:VCPKG_ROOT\installed\x64-windows-static\include" | Out-File -FilePath $env:GITHUB_PATH -Append
+          echo "$env:VCPKG_ROOT\installed\x64-windows-static\lib" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      # ------------------------------------------------------------
+      # 8) confy 깨진 리비전 해결
+      # ------------------------------------------------------------
+      - name: Fix confy broken revision
         shell: pwsh
         run: |
           cd "$env:GITHUB_WORKSPACE"
-          # confy만 먼저 시도, 실패하면 전체 update
           cargo update -p confy || cargo update
 
       # ------------------------------------------------------------
@@ -125,7 +134,7 @@ jobs:
           python build.py
 
       # ------------------------------------------------------------
-      # 10) WiX Toolset 설치 (zip 버전 → PATH 보장)
+      # 10) WiX Toolset 설치 (PATH 문제 해결)
       # ------------------------------------------------------------
       - name: Install WiX Toolset
         shell: pwsh
@@ -140,7 +149,7 @@ jobs:
           $wixBin | Out-File -FilePath $env:GITHUB_PATH -Append
 
       # ------------------------------------------------------------
-      # 11) MSI 빌드 (기존 build.ps1 사용)
+      # 11) MSI 빌드
       # ------------------------------------------------------------
       - name: Build Windows MSI
         shell: pwsh
@@ -148,7 +157,7 @@ jobs:
           powershell ./build.ps1 -Configuration Release
 
       # ------------------------------------------------------------
-      # 12) 결과물 업로드 (EXE + MSI)
+      # 12) 결과물 업로드
       # ------------------------------------------------------------
       - name: Upload EXE + MSI
         uses: actions/upload-artifact@v4
