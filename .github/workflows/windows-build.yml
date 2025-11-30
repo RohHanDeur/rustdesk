@@ -11,7 +11,7 @@ jobs:
 
     steps:
       # ------------------------------------------------------------
-      # Checkout
+      # 1) 소스 체크아웃 (서브모듈 포함)
       # ------------------------------------------------------------
       - name: Checkout source
         uses: actions/checkout@v4
@@ -19,7 +19,7 @@ jobs:
           submodules: recursive
 
       # ------------------------------------------------------------
-      # Install Rust
+      # 2) Rust 설치
       # ------------------------------------------------------------
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -27,34 +27,88 @@ jobs:
           components: rustfmt, clippy
 
       # ------------------------------------------------------------
-      # Setup MSBuild (for WiX)
+      # 3) MSBuild 설치 (WiX 빌드용)
       # ------------------------------------------------------------
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
       # ------------------------------------------------------------
-      # Install vcpkg
+      # 4) Python 설치 (build.py 실행용)
+      # ------------------------------------------------------------
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # ------------------------------------------------------------
+      # 5) vcpkg 설치
       # ------------------------------------------------------------
       - name: Install vcpkg
         shell: pwsh
         run: |
           $vcpkgPath = Join-Path $env:RUNNER_TEMP "vcpkg"
+          Write-Host "VCPKG path = $vcpkgPath"
           git clone https://github.com/microsoft/vcpkg $vcpkgPath
           & "$vcpkgPath\bootstrap-vcpkg.bat"
-          echo "VCPKG_ROOT=$vcpkgPath" | Out-File -Append $env:GITHUB_ENV
+          # GitHub Actions 환경 변수로 등록
+          "VCPKG_ROOT=$vcpkgPath" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       # ------------------------------------------------------------
-      # Install Opus (force correct triplet)
-      # This FIXES the "opus_multistream.h not found" error
+      # 6) vcpkg.json 에 opus dependency 추가 (이미 있으면 건너뜀)
+      #    -> manifest 모드에서 개별 install 대신 manifest에 추가하는 방식
       # ------------------------------------------------------------
-      - name: Install Opus library
+      - name: Ensure opus exists in vcpkg.json
         shell: pwsh
         run: |
-          $vcpkg = "$env:VCPKG_ROOT\vcpkg.exe"
-          & $vcpkg install opus --triplet x64-windows
+          if (-not (Test-Path "vcpkg.json")) {
+            Write-Host "vcpkg.json not found, skipping opus patch step."
+            exit 0
+          }
+
+          $jsonText = Get-Content "vcpkg.json" -Raw
+          $json = $jsonText | ConvertFrom-Json
+
+          if ($null -eq $json.dependencies) {
+            $json | Add-Member -MemberType NoteProperty -Name dependencies -Value @()
+          }
+
+          # dependencies 항목에서 string / object 둘 다 대응해서 이름만 뽑기
+          $depNames = @()
+          foreach ($d in $json.dependencies) {
+            if ($d -is [string]) {
+              $depNames += $d
+            } elseif ($d.PSObject.Properties.Name -contains 'name') {
+              $depNames += $d.name
+            }
+          }
+
+          if ($depNames -contains "opus") {
+            Write-Host "opus already exists in vcpkg.json dependencies."
+          } else {
+            Write-Host "Adding opus to vcpkg.json dependencies."
+            # 기존이 문자열 배열일 가능성이 높으니, 일단 string으로 추가
+            $json.dependencies += "opus"
+            $json | ConvertTo-Json -Depth 10 | Set-Content "vcpkg.json" -Encoding UTF8
+          }
 
       # ------------------------------------------------------------
-      # Build RustDesk (no HWCodec)
+      # 7) vcpkg manifest 기반으로 패키지 설치
+      #    !!! 중요: manifest 모드에서는 개별 포트 이름 주지 말고,
+      #    vcpkg.json + --triplet 만 줘야 함 !!!
+      # ------------------------------------------------------------
+      - name: Run vcpkg install (manifest mode)
+        shell: pwsh
+        run: |
+          $vcpkg = Join-Path $env:VCPKG_ROOT "vcpkg.exe"
+          Write-Host "Using vcpkg at $vcpkg"
+          # rustdesk 루트에서 실행 (vcpkg.json 있는 위치)
+          Push-Location "$env:GITHUB_WORKSPACE"
+          & $vcpkg install --triplet x64-windows-static
+          Pop-Location
+
+      # ------------------------------------------------------------
+      # 8) RustDesk Windows GUI 빌드 (HWCodec 비활성: inline만 사용)
+      #    hwcodec 가 ffmpeg 등 추가 의존성을 요구해서, 일단 안정적인 GUI+MSI만 목표
       # ------------------------------------------------------------
       - name: Build Windows GUI
         shell: pwsh
@@ -62,19 +116,21 @@ jobs:
           python build.py
 
       # ------------------------------------------------------------
-      # Install WiX Toolset (for MSI creation)
+      # 9) WiX Toolset 설치 (MSI 빌드용)
       # ------------------------------------------------------------
       - name: Install WiX Toolset
         shell: pwsh
         run: |
           $wix = "$env:ProgramFiles\WixToolsetV3"
-          mkdir $wix -Force | Out-Null
+          New-Item -ItemType Directory -Force -Path $wix | Out-Null
           Invoke-WebRequest -Uri "https://wixtoolset.org/releases/v3.11.2/wix311-binaries.zip" -OutFile wix.zip
-          Expand-Archive wix.zip -DestinationPath $wix
-          echo "$wix" | Out-File -Append $env:GITHUB_PATH
+          Expand-Archive wix.zip -DestinationPath $wix -Force
+          # WiX 경로를 PATH에 추가
+          $wixBin = Join-Path $wix "bin"
+          $wixBin | Out-File -FilePath $env:GITHUB_PATH -Append
 
       # ------------------------------------------------------------
-      # Build MSI Installer
+      # 10) MSI 빌드
       # ------------------------------------------------------------
       - name: Build Windows MSI
         shell: pwsh
@@ -82,7 +138,7 @@ jobs:
           powershell ./build.ps1 -Configuration Release
 
       # ------------------------------------------------------------
-      # Upload artifacts (EXE + MSI)
+      # 11) 결과물 업로드 (EXE + MSI)
       # ------------------------------------------------------------
       - name: Upload EXE + MSI
         uses: actions/upload-artifact@v4
