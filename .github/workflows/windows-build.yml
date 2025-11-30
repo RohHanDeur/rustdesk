@@ -41,7 +41,7 @@ jobs:
           python-version: '3.11'
 
       # ------------------------------------------------------------
-      # 5) vcpkg 설치 (네트워크 오류 100% 해결 버전)
+      # 5) vcpkg 설치 (네트워크 오류 안전 모드)
       # ------------------------------------------------------------
       - name: Install vcpkg (safe mode)
         shell: pwsh
@@ -49,14 +49,13 @@ jobs:
           $vcpkgPath = Join-Path $env:RUNNER_TEMP "vcpkg"
           git clone https://github.com/microsoft/vcpkg $vcpkgPath
 
-          # 1) bootstrap 시 문제를 일으키는 vcpkg.exe 원격 다운로드를 대신함
+          # vcpkg.exe를 먼저 직접 다운로드해서 bootstrap 시 네트워크 오류 방지
           $exeUrl = "https://github.com/microsoft/vcpkg-tool/releases/latest/download/vcpkg.exe"
           $exeDst = Join-Path $vcpkgPath "vcpkg.exe"
 
           Write-Host "[+] Downloading vcpkg.exe manually..."
           Invoke-WebRequest -Uri $exeUrl -OutFile $exeDst -UseBasicParsing
 
-          # 2) vcpkg.exe가 이미 있으므로 bootstrap 다운로드 스킵 → 100% 성공
           Write-Host "[+] Running bootstrap-vcpkg.bat"
           & "$vcpkgPath\bootstrap-vcpkg.bat"
 
@@ -80,7 +79,6 @@ jobs:
             $json | Add-Member -MemberType NoteProperty -Name dependencies -Value @()
           }
 
-          # dependencies 이름 추출
           $depNames = @()
           foreach ($d in $json.dependencies) {
             if ($d -is [string]) { $depNames += $d }
@@ -96,7 +94,7 @@ jobs:
           }
 
       # ------------------------------------------------------------
-      # 7) manifest 기반 vcpkg install (절대 패키지명 주면 안됨)
+      # 7) manifest 기반 vcpkg install
       # ------------------------------------------------------------
       - name: Run vcpkg install (manifest mode)
         shell: pwsh
@@ -108,7 +106,18 @@ jobs:
           & $vcpkgExe install --triplet x64-windows-static
 
       # ------------------------------------------------------------
-      # 8) RustDesk Windows GUI 빌드 (hwcodec 비활성)
+      # 8) confy git 리비전 깨짐 대응: cargo update
+      #    (RustDesk 공식 FAQ에서도 권장하는 해결책)
+      # ------------------------------------------------------------
+      - name: Fix broken confy git revision (cargo update)
+        shell: pwsh
+        run: |
+          cd "$env:GITHUB_WORKSPACE"
+          # confy만 먼저 시도, 실패하면 전체 update
+          cargo update -p confy || cargo update
+
+      # ------------------------------------------------------------
+      # 9) RustDesk Windows GUI 빌드 (hwcodec 비활성)
       # ------------------------------------------------------------
       - name: Build Windows GUI (no hwcodec)
         shell: pwsh
@@ -116,7 +125,7 @@ jobs:
           python build.py
 
       # ------------------------------------------------------------
-      # 9) WiX Toolset 설치 (zip 버전 → PATH 100% 반영)
+      # 10) WiX Toolset 설치 (zip 버전 → PATH 보장)
       # ------------------------------------------------------------
       - name: Install WiX Toolset
         shell: pwsh
@@ -131,7 +140,7 @@ jobs:
           $wixBin | Out-File -FilePath $env:GITHUB_PATH -Append
 
       # ------------------------------------------------------------
-      # 10) MSI 빌드 (build.ps1 사용)
+      # 11) MSI 빌드 (기존 build.ps1 사용)
       # ------------------------------------------------------------
       - name: Build Windows MSI
         shell: pwsh
@@ -139,7 +148,7 @@ jobs:
           powershell ./build.ps1 -Configuration Release
 
       # ------------------------------------------------------------
-      # 11) 결과물 업로드 (EXE + MSI)
+      # 12) 결과물 업로드 (EXE + MSI)
       # ------------------------------------------------------------
       - name: Upload EXE + MSI
         uses: actions/upload-artifact@v4
