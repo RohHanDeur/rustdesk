@@ -56,25 +56,21 @@ jobs:
           Write-Host "[+] Downloading vcpkg.exe..."
           Invoke-WebRequest -Uri $exeUrl -OutFile $exeDst -UseBasicParsing
 
-          Write-Host "[+] Running bootstrap (no network downloads)"
+          Write-Host "[+] Running bootstrap"
           & "$vcpkgPath\bootstrap-vcpkg.bat"
 
           "VCPKG_ROOT=$vcpkgPath" | Out-File -FilePath $env:GITHUB_ENV -Append
           "VCPKG_DEFAULT_TRIPLET=x64-windows-static" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       # ------------------------------------------------------------
-      # 6) vcpkg.json → opus dependency 자동 추가
+      # 6) vcpkg.json → opus 자동 추가
       # ------------------------------------------------------------
       - name: Ensure opus exists in vcpkg.json
         shell: pwsh
         run: |
-          if (-not (Test-Path "vcpkg.json")) {
-            Write-Host "vcpkg.json not found. Skipping opus patch."
-            exit 0
-          }
+          if (-not (Test-Path "vcpkg.json")) { exit 0 }
 
           $json = Get-Content "vcpkg.json" -Raw | ConvertFrom-Json
-
           if ($null -eq $json.dependencies) {
             $json | Add-Member -MemberType NoteProperty -Name dependencies -Value @()
           }
@@ -85,10 +81,7 @@ jobs:
             elseif ($d.PSObject.Properties.Name -contains 'name') { $depNames += $d.name }
           }
 
-          if ($depNames -contains "opus") {
-            Write-Host "[OK] opus already exists."
-          } else {
-            Write-Host "[+] Adding opus to dependencies."
+          if ($depNames -notcontains "opus") {
             $json.dependencies += "opus"
             $json | ConvertTo-Json -Depth 10 | Set-Content "vcpkg.json" -Encoding UTF8
           }
@@ -103,12 +96,12 @@ jobs:
           cd "$env:GITHUB_WORKSPACE"
 
           & $vcpkg install `
-              --triplet x64-windows-static `
-              --x-manifest-root="$env:GITHUB_WORKSPACE" `
-              --x-install-root="$env:VCPKG_ROOT/installed"
+            --triplet x64-windows-static `
+            --x-manifest-root="$env:GITHUB_WORKSPACE" `
+            --x-install-root="$env:VCPKG_ROOT/installed"
 
       # ------------------------------------------------------------
-      # 8) include/lib PATH 추가 (magnum-opus 빌드 실패 방지)
+      # 8) include/lib PATH 적용
       # ------------------------------------------------------------
       - name: Add vcpkg include/lib to PATH
         shell: pwsh
@@ -126,12 +119,12 @@ jobs:
           cargo update -p confy || cargo update
 
       # ------------------------------------------------------------
-      # 10) RustDesk Windows GUI 빌드 (portable 비활성화)
+      # 10) RustDesk Windows GUI 빌드 (portable pack 스킵)
       # ------------------------------------------------------------
-      - name: Build Windows GUI (skip portable)
+      - name: Build Windows GUI (skip portable pack)
         shell: pwsh
         run: |
-          python build.py --no-portable
+          python build.py --skip-portable-pack
 
       # ------------------------------------------------------------
       # 11) WiX Toolset 설치
@@ -140,7 +133,7 @@ jobs:
         shell: pwsh
         run: |
           $wixRoot = "$env:ProgramFiles\WixToolsetV3"
-          New-Item -ItemType Directory -Force -Path $wixRoot | Out-Null
+          New-Item -ItemType Directory -Force -Path $wixRoot | Out-File -Force
 
           Invoke-WebRequest -Uri "https://wixtoolset.org/releases/v3.11.2/wix311-binaries.zip" -OutFile wix.zip
           Expand-Archive wix.zip -DestinationPath $wixRoot -Force
@@ -157,7 +150,7 @@ jobs:
           powershell ./build.ps1 -Configuration Release
 
       # ------------------------------------------------------------
-      # 13) 결과물 업로드
+      # 13) EXE + MSI 업로드
       # ------------------------------------------------------------
       - name: Upload EXE + MSI
         uses: actions/upload-artifact@v4
