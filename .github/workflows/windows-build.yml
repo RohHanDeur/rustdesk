@@ -1,149 +1,151 @@
-name: Build Windows RustDesk (GUI + MSI)
+name: Build RustDesk Windows GUI (EXE + MSI)
 
 on:
-  push:
-    branches: [ master ]
   workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - ".github/workflows/windows-build.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - "libs/**"
+      - "vcpkg.json"
+
+env:
+  # 정적으로 링크된 CRT
+  RUSTFLAGS: "-C target-feature=+crt-static"
+  VCPKG_DEFAULT_TRIPLET: x64-windows-static
+  VCPKG_ROOT: ${{ github.workspace }}\vcpkg
 
 jobs:
-  build:
-    runs-on: windows-2022
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
 
     steps:
-      # ------------------------------------------------------------
-      # 1) 소스 체크아웃 (서브모듈 포함)
-      # ------------------------------------------------------------
-      - name: Checkout source
+      - name: Checkout repository (with submodules)
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      # ------------------------------------------------------------
-      # 2) Rust 설치
-      # ------------------------------------------------------------
-      - name: Install Rust
+      - name: Setup Rust (stable MSVC)
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          targets: x86_64-pc-windows-msvc
 
-      # ------------------------------------------------------------
-      # 3) MSBuild 설치 (WiX 빌드용)
-      # ------------------------------------------------------------
-      - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v2
-
-      # ------------------------------------------------------------
-      # 4) Python 설치 (build.py 실행용)
-      # ------------------------------------------------------------
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      # ------------------------------------------------------------
-      # 5) vcpkg 설치
-      # ------------------------------------------------------------
+      # vcpkg 설치
       - name: Install vcpkg
-        shell: pwsh
         run: |
-          $vcpkgPath = Join-Path $env:RUNNER_TEMP "vcpkg"
-          Write-Host "VCPKG path = $vcpkgPath"
-          git clone https://github.com/microsoft/vcpkg $vcpkgPath
-          & "$vcpkgPath\bootstrap-vcpkg.bat"
-          # GitHub Actions 환경 변수로 등록
-          "VCPKG_ROOT=$vcpkgPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+          git clone https://github.com/microsoft/vcpkg $env:VCPKG_ROOT
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat"
 
-      # ------------------------------------------------------------
-      # 6) vcpkg.json 에 opus dependency 추가 (이미 있으면 건너뜀)
-      #    -> manifest 모드에서 개별 install 대신 manifest에 추가하는 방식
-      # ------------------------------------------------------------
-      - name: Ensure opus exists in vcpkg.json
-        shell: pwsh
+      # vcpkg.json에 opus 의존성이 없으면 자동 추가
+      - name: Ensure opus in vcpkg.json (manifest mode)
         run: |
-          if (-not (Test-Path "vcpkg.json")) {
-            Write-Host "vcpkg.json not found, skipping opus patch step."
-            exit 0
+          $path = "vcpkg.json"
+          if (-Not (Test-Path $path)) {
+            Write-Error "vcpkg.json not found in repository root."
+            exit 1
           }
 
-          $jsonText = Get-Content "vcpkg.json" -Raw
-          $json = $jsonText | ConvertFrom-Json
+          $json = Get-Content $path -Raw | ConvertFrom-Json
 
-          if ($null -eq $json.dependencies) {
-            $json | Add-Member -MemberType NoteProperty -Name dependencies -Value @()
+          # dependencies가 문자열 배열 또는 객체 배열인 경우 모두 처리
+          $deps = @()
+          if ($json.dependencies -is [System.Collections.IEnumerable]) {
+            $deps = [System.Collections.ArrayList]@($json.dependencies)
+          } elseif ($null -ne $json.dependencies) {
+            $deps = [System.Collections.ArrayList]@($json.dependencies)
           }
 
-          # dependencies 항목에서 string / object 둘 다 대응해서 이름만 뽑기
-          $depNames = @()
-          foreach ($d in $json.dependencies) {
-            if ($d -is [string]) {
-              $depNames += $d
-            } elseif ($d.PSObject.Properties.Name -contains 'name') {
-              $depNames += $d.name
+          $hasOpus = $false
+          foreach ($d in $deps) {
+            if ($d -is [string] -and $d -eq "opus") {
+              $hasOpus = $true
+            } elseif ($d.PSObject.Properties.Name -contains "name" -and $d.name -eq "opus") {
+              $hasOpus = $true
             }
           }
 
-          if ($depNames -contains "opus") {
-            Write-Host "opus already exists in vcpkg.json dependencies."
+          if (-not $hasOpus) {
+            Write-Host "opus is not in dependencies. Adding opus..."
+            if ($deps.Count -eq 0) {
+              $json.dependencies = @("opus")
+            } else {
+              $deps.Add("opus") | Out-Null
+              $json.dependencies = $deps
+            }
+            $json | ConvertTo-Json -Depth 10 | Set-Content $path -Encoding UTF8
           } else {
-            Write-Host "Adding opus to vcpkg.json dependencies."
-            # 기존이 문자열 배열일 가능성이 높으니, 일단 string으로 추가
-            $json.dependencies += "opus"
-            $json | ConvertTo-Json -Depth 10 | Set-Content "vcpkg.json" -Encoding UTF8
+            Write-Host "opus already present in vcpkg.json"
           }
 
-      # ------------------------------------------------------------
-      # 7) vcpkg manifest 기반으로 패키지 설치
-      #    !!! 중요: manifest 모드에서는 개별 포트 이름 주지 말고,
-      #    vcpkg.json + --triplet 만 줘야 함 !!!
-      # ------------------------------------------------------------
-      - name: Run vcpkg install (manifest mode)
-        shell: pwsh
+      # manifest 모드로 vcpkg 의존성 설치
+      - name: vcpkg install (manifest, x64-windows-static)
         run: |
-          $vcpkg = Join-Path $env:VCPKG_ROOT "vcpkg.exe"
-          Write-Host "Using vcpkg at $vcpkg"
-          # rustdesk 루트에서 실행 (vcpkg.json 있는 위치)
-          Push-Location "$env:GITHUB_WORKSPACE"
-          & $vcpkg install --triplet x64-windows-static
-          Pop-Location
+          cd ${{ github.workspace }}
+          & "$env:VCPKG_ROOT\vcpkg.exe" install --triplet x64-windows-static
 
-      # ------------------------------------------------------------
-      # 8) RustDesk Windows GUI 빌드 (HWCodec 비활성: inline만 사용)
-      #    hwcodec 가 ffmpeg 등 추가 의존성을 요구해서, 일단 안정적인 GUI+MSI만 목표
-      # ------------------------------------------------------------
-      - name: Build Windows GUI
-        shell: pwsh
+      - name: Add vcpkg to PATH
         run: |
-          python build.py
+          echo "$env:VCPKG_ROOT" | Out-File -FilePath $env:GITHUB_PATH -Append
 
-      # ------------------------------------------------------------
-      # 9) WiX Toolset 설치 (MSI 빌드용)
-      # ------------------------------------------------------------
+      # WiX Toolset 설치 (MSI 빌드용)
       - name: Install WiX Toolset
-        shell: pwsh
         run: |
-          $wix = "$env:ProgramFiles\WixToolsetV3"
-          New-Item -ItemType Directory -Force -Path $wix | Out-Null
-          Invoke-WebRequest -Uri "https://wixtoolset.org/releases/v3.11.2/wix311-binaries.zip" -OutFile wix.zip
-          Expand-Archive wix.zip -DestinationPath $wix -Force
-          # WiX 경로를 PATH에 추가
-          $wixBin = Join-Path $wix "bin"
-          $wixBin | Out-File -FilePath $env:GITHUB_PATH -Append
+          choco install wixtoolset --yes
+          $wixPath = "C:\Program Files (x86)\WiX Toolset v3.11\bin"
+          if (-Not (Test-Path $wixPath)) {
+            Write-Error "WiX bin path not found: $wixPath"
+            exit 1
+          }
+          echo $wixPath | Out-File -FilePath $env:GITHUB_PATH -Append
 
-      # ------------------------------------------------------------
-      # 10) MSI 빌드
-      # ------------------------------------------------------------
-      - name: Build Windows MSI
-        shell: pwsh
+      # RustDesk GUI 빌드 (hwcodec 비활성화 예시)
+      - name: Build RustDesk GUI (no hwcodec)
         run: |
-          powershell ./build.ps1 -Configuration Release
+          cd ${{ github.workspace }}
+          # ⚠️ 여기 명령은 실제 프로젝트에서 사용하는 빌드 명령으로 교체하세요
+          # 예시 1: Sciter GUI + hwcodec 비활성화
+          # cargo build --release --bin rustdesk --no-default-features --features "sciter"
+          #
+          # 예시 2: Flutter GUI 사용 시 (실제 CI 명령 참고)
+          # cargo run --package xtask --release -- build --platform windows
+          cargo build --release --bin rustdesk
 
-      # ------------------------------------------------------------
-      # 11) 결과물 업로드 (EXE + MSI)
-      # ------------------------------------------------------------
-      - name: Upload EXE + MSI
+      # WiX로 MSI 생성 (경로 / 파일명은 레포 구조에 맞게 조정)
+      - name: Build MSI via WiX
+        run: |
+          cd ${{ github.workspace }}
+          # ⚠️ 실제 .wxs 파일 경로로 수정 필요
+          # 예: installer\windows\rustdesk.wxs 존재한다고 가정
+          if (-Not (Test-Path "installer\windows\rustdesk.wxs")) {
+            Write-Error "WiX source file installer\windows\rustdesk.wxs not found."
+            exit 1
+          }
+
+          mkdir obj -ErrorAction SilentlyContinue | Out-Null
+
+          candle.exe installer\windows\rustdesk.wxs -out obj\rustdesk.wixobj
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "candle.exe failed."
+            exit 1
+          }
+
+          light.exe obj\rustdesk.wixobj -o target\release\rustdesk-x64.msi
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "light.exe failed."
+            exit 1
+          }
+
+      # EXE + MSI 아티팩트 업로드
+      - name: Upload artifacts (EXE + MSI)
         uses: actions/upload-artifact@v4
         with:
-          name: rustdesk-windows-build
+          name: rustdesk-windows-x64
           path: |
             target\release\rustdesk.exe
-            target\release\*.msi
+            target\release\rustdesk-x64.msi
