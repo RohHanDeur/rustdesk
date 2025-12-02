@@ -9,9 +9,13 @@ jobs:
   build:
     runs-on: windows-2022
 
+    env:
+      # vcpkg 기본 트리플릿
+      VCPKG_DEFAULT_TRIPLET: x64-windows-static
+
     steps:
       # ------------------------------------------------------------
-      # 1) Checkout source (with submodules)
+      # 1) 소스 체크아웃 (서브모듈 포함)
       # ------------------------------------------------------------
       - name: Checkout source
         uses: actions/checkout@v4
@@ -19,7 +23,7 @@ jobs:
           submodules: recursive
 
       # ------------------------------------------------------------
-      # 2) Install Rust
+      # 2) Rust 설치 (stable + rustfmt + clippy)
       # ------------------------------------------------------------
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -27,13 +31,13 @@ jobs:
           components: rustfmt, clippy
 
       # ------------------------------------------------------------
-      # 3) Setup MSBuild
+      # 3) MSBuild 설치 (WiX 빌드용)
       # ------------------------------------------------------------
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
       # ------------------------------------------------------------
-      # 4) Install Python
+      # 4) Python 설치 (build.ps1 내부에서 필요할 수 있어서 유지)
       # ------------------------------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -41,67 +45,68 @@ jobs:
           python-version: '3.11'
 
       # ------------------------------------------------------------
-      # 5) Install vcpkg (no opus)
+      # 5) vcpkg 설치 (클래식 모드, manifest 사용 안 함)
       # ------------------------------------------------------------
       - name: Install vcpkg
         shell: pwsh
         run: |
           $vcpkgPath = Join-Path $env:RUNNER_TEMP "vcpkg"
+          Write-Host "VCPKG path = $vcpkgPath"
           git clone https://github.com/microsoft/vcpkg $vcpkgPath
           & "$vcpkgPath\bootstrap-vcpkg.bat"
 
+          # 환경 변수 등록
           "VCPKG_ROOT=$vcpkgPath" | Out-File -FilePath $env:GITHUB_ENV -Append
           "VCPKG_DEFAULT_TRIPLET=x64-windows-static" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       # ------------------------------------------------------------
-      # 6) Remove opus from vcpkg.json (RustDesk uses FFmpeg-built opus)
+      # 6) RustDesk에서 필요한 C/C++ 라이브러리 설치 (클래식 모드)
+      #    ➜ libvpx, libyuv, opus, aom
       # ------------------------------------------------------------
-      - name: Remove opus dependency
+      - name: Install C/C++ deps via vcpkg (classic mode)
         shell: pwsh
         run: |
-          if (Test-Path "vcpkg.json") {
-            $json = Get-Content "vcpkg.json" -Raw | ConvertFrom-Json
-            $json.dependencies = @($json.dependencies | Where-Object { $_ -ne "opus" })
-            $json | ConvertTo-Json -Depth 10 | Set-Content "vcpkg.json" -Encoding UTF8
-            Write-Host "opus removed from vcpkg.json"
+          $vcpkgRoot = $env:VCPKG_ROOT
+          if (-not $vcpkgRoot) {
+            Write-Error "VCPKG_ROOT is not set."
+            exit 1
           }
 
-      # ------------------------------------------------------------
-      # 7) Run vcpkg install
-      # ------------------------------------------------------------
-      - name: Run vcpkg install
-        shell: pwsh
-        run: |
-          $vcpkg = Join-Path $env:VCPKG_ROOT "vcpkg.exe"
-          Push-Location "$env:GITHUB_WORKSPACE"
-          & $vcpkg install --triplet x64-windows-static
+          $vcpkgExe = Join-Path $vcpkgRoot "vcpkg.exe"
+          Write-Host "Using vcpkg at $vcpkgExe"
+
+          Push-Location $vcpkgRoot
+          # manifest 모드가 아니라 vcpkg 자체 폴더에서 실행하므로
+          # 개별 포트 install 가능
+          & $vcpkgExe install `
+              libvpx:x64-windows-static `
+              libyuv:x64-windows-static `
+              opus:x64-windows-static `
+              aom:x64-windows-static
           Pop-Location
 
-      # ------------------------------------------------------------
-      # 8) Disable portable build in build.py
-      # ------------------------------------------------------------
-      - name: Disable portable build in build.py
-        shell: pwsh
-        run: |
-          $file = "build.py"
-          if (Test-Path $file) {
-            Write-Host "Patching build.py to disable portable pack..."
-            (Get-Content $file) `
-              -replace "def build_portable[\\s\\S]*?def", "def build_portable(*args, **kwargs):`n    return`n`ndef" `
-              -replace "if options\\.portable[\\s\\S]*?pass", "# portable disabled in CI" `
-              | Set-Content $file -Encoding UTF8
+          # opus 헤더가 제대로 설치됐는지 한 번 찍어봄 (로그 확인용)
+          $opusInclude = Join-Path $vcpkgRoot "installed\x64-windows-static\include\opus"
+          Write-Host "Listing opus headers in $opusInclude"
+          if (Test-Path $opusInclude) {
+            Get-ChildItem $opusInclude | ForEach-Object { Write-Host $_.FullName }
+          } else {
+            Write-Warning "Opus include dir not found: $opusInclude"
           }
 
       # ------------------------------------------------------------
-      # 9) Build Windows with FFmpeg (important!)
+      # 7) RustDesk Windows GUI 빌드 (hwcodec 비활성 / inline만 사용)
+      #    ➜ build.py 사용 안 하고, 순수 cargo 빌드로 exe만 생성
       # ------------------------------------------------------------
-      - name: Build RustDesk with FFmpeg (hwcodec)
+      - name: Build Windows GUI (no hwcodec, no portable)
         shell: pwsh
         run: |
-          python build.py --hwcodec --skip-portable-pack
+          # magnum-opus가 vcpkg에서 opus를 찾을 수 있도록 VCPKG_ROOT 사용
+          Write-Host "Building RustDesk with features: inline"
+          cargo build --release --features inline
 
       # ------------------------------------------------------------
-      # 10) Install WiX Toolset
+      # 8) WiX Toolset 설치 (MSI 빌드용)
       # ------------------------------------------------------------
       - name: Install WiX Toolset
         shell: pwsh
@@ -110,19 +115,22 @@ jobs:
           New-Item -ItemType Directory -Force -Path $wix | Out-Null
           Invoke-WebRequest -Uri "https://wixtoolset.org/releases/v3.11.2/wix311-binaries.zip" -OutFile wix.zip
           Expand-Archive wix.zip -DestinationPath $wix -Force
+
+          # WiX 경로를 PATH에 추가
           $wixBin = Join-Path $wix "bin"
           $wixBin | Out-File -FilePath $env:GITHUB_PATH -Append
 
       # ------------------------------------------------------------
-      # 11) Build MSI installer
+      # 9) MSI 빌드 (build.ps1 사용)
+      #    ➜ target\release\rustdesk.exe 를 기반으로 MSI 생성
       # ------------------------------------------------------------
       - name: Build Windows MSI
         shell: pwsh
         run: |
-          powershell ./build.ps1 -Configuration Release
+          ./build.ps1 -Configuration Release
 
       # ------------------------------------------------------------
-      # 12) Upload artifacts
+      # 10) 결과물 업로드 (EXE + MSI)
       # ------------------------------------------------------------
       - name: Upload EXE + MSI
         uses: actions/upload-artifact@v4
