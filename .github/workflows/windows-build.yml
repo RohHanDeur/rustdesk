@@ -56,3 +56,5 @@ jobs:
             target/release/service.exe
             *.exe
             *.msi
+
+            #32
