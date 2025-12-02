@@ -1,141 +1,58 @@
-name: Build Windows RustDesk (GUI + MSI)
+name: Windows Build
 
 on:
-  push:
-    branches: [ master ]
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: windows-2022
-
-    env:
-      # vcpkg 기본 트리플릿
-      VCPKG_DEFAULT_TRIPLET: x64-windows-static
+    runs-on: windows-latest
 
     steps:
-      # ------------------------------------------------------------
-      # 1) 소스 체크아웃 (서브모듈 포함)
-      # ------------------------------------------------------------
-      - name: Checkout source
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      # ------------------------------------------------------------
-      # 2) Rust 설치 (stable + rustfmt + clippy)
-      # ------------------------------------------------------------
-      - name: Install Rust
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy, rustfmt
 
-      # ------------------------------------------------------------
-      # 3) MSBuild 설치 (WiX 빌드용)
-      # ------------------------------------------------------------
-      - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v2
-
-      # ------------------------------------------------------------
-      # 4) Python 설치 (build.ps1 내부에서 필요할 수 있어서 유지)
-      # ------------------------------------------------------------
-      - name: Setup Python
+      - name: Install Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      # ------------------------------------------------------------
-      # 5) vcpkg 설치 (클래식 모드, manifest 사용 안 함)
-      # ------------------------------------------------------------
+      - name: Install MSBuild
+        uses: microsoft/setup-msbuild@v2
+
       - name: Install vcpkg
         shell: pwsh
         run: |
           $vcpkgPath = Join-Path $env:RUNNER_TEMP "vcpkg"
-          Write-Host "VCPKG path = $vcpkgPath"
           git clone https://github.com/microsoft/vcpkg $vcpkgPath
-          & "$vcpkgPath\bootstrap-vcpkg.bat"
-
-          # 환경 변수 등록
+          & "$vcpkgPath/bootstrap-vcpkg.bat"
           "VCPKG_ROOT=$vcpkgPath" | Out-File -FilePath $env:GITHUB_ENV -Append
           "VCPKG_DEFAULT_TRIPLET=x64-windows-static" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      # ------------------------------------------------------------
-      # 6) RustDesk에서 필요한 C/C++ 라이브러리 설치 (클래식 모드)
-      #    ➜ libvpx, libyuv, opus, aom
-      # ------------------------------------------------------------
-      - name: Install C/C++ deps via vcpkg (classic mode)
+      - name: Install vcpkg dependencies (Opus, FFmpeg, etc)
         shell: pwsh
         run: |
-          $vcpkgRoot = $env:VCPKG_ROOT
-          if (-not $vcpkgRoot) {
-            Write-Error "VCPKG_ROOT is not set."
-            exit 1
-          }
+          vcpkg install opus:x64-windows-static
+          vcpkg install libvpx:x64-windows-static
+          vcpkg install ffmpeg[x264]:x64-windows-static
 
-          $vcpkgExe = Join-Path $vcpkgRoot "vcpkg.exe"
-          Write-Host "Using vcpkg at $vcpkgExe"
-
-          Push-Location $vcpkgRoot
-          # manifest 모드가 아니라 vcpkg 자체 폴더에서 실행하므로
-          # 개별 포트 install 가능
-          & $vcpkgExe install `
-              libvpx:x64-windows-static `
-              libyuv:x64-windows-static `
-              opus:x64-windows-static `
-              aom:x64-windows-static
-          Pop-Location
-
-          # opus 헤더가 제대로 설치됐는지 한 번 찍어봄 (로그 확인용)
-          $opusInclude = Join-Path $vcpkgRoot "installed\x64-windows-static\include\opus"
-          Write-Host "Listing opus headers in $opusInclude"
-          if (Test-Path $opusInclude) {
-            Get-ChildItem $opusInclude | ForEach-Object { Write-Host $_.FullName }
-          } else {
-            Write-Warning "Opus include dir not found: $opusInclude"
-          }
-
-      # ------------------------------------------------------------
-      # 7) RustDesk Windows GUI 빌드 (hwcodec 비활성 / inline만 사용)
-      #    ➜ build.py 사용 안 하고, 순수 cargo 빌드로 exe만 생성
-      # ------------------------------------------------------------
-      - name: Build Windows GUI (no hwcodec, no portable)
+      - name: Build RustDesk (inline OFF / hwcodec ON)
         shell: pwsh
         run: |
-          # magnum-opus가 vcpkg에서 opus를 찾을 수 있도록 VCPKG_ROOT 사용
-          Write-Host "Building RustDesk with features: inline"
-          cargo build --release --features inline
+          python build.py -f 0 --hwcodec --skip-portable-pack
 
-      # ------------------------------------------------------------
-      # 8) WiX Toolset 설치 (MSI 빌드용)
-      # ------------------------------------------------------------
-      - name: Install WiX Toolset
-        shell: pwsh
-        run: |
-          $wix = "$env:ProgramFiles\WixToolsetV3"
-          New-Item -ItemType Directory -Force -Path $wix | Out-Null
-          Invoke-WebRequest -Uri "https://wixtoolset.org/releases/v3.11.2/wix311-binaries.zip" -OutFile wix.zip
-          Expand-Archive wix.zip -DestinationPath $wix -Force
-
-          # WiX 경로를 PATH에 추가
-          $wixBin = Join-Path $wix "bin"
-          $wixBin | Out-File -FilePath $env:GITHUB_PATH -Append
-
-      # ------------------------------------------------------------
-      # 9) MSI 빌드 (build.ps1 사용)
-      #    ➜ target\release\rustdesk.exe 를 기반으로 MSI 생성
-      # ------------------------------------------------------------
-      - name: Build Windows MSI
-        shell: pwsh
-        run: |
-          ./build.ps1 -Configuration Release
-
-      # ------------------------------------------------------------
-      # 10) 결과물 업로드 (EXE + MSI)
-      # ------------------------------------------------------------
-      - name: Upload EXE + MSI
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: rustdesk-windows-build
           path: |
-            target\release\rustdesk.exe
-            target\release\*.msi
+            target/release/rustdesk.exe
+            target/release/service.exe
+            *.exe
+            *.msi
