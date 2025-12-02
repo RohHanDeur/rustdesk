@@ -11,7 +11,7 @@ jobs:
 
     steps:
       # ------------------------------------------------------------
-      # 1) Checkout
+      # 1) Checkout source (with submodules)
       # ------------------------------------------------------------
       - name: Checkout source
         uses: actions/checkout@v4
@@ -41,7 +41,7 @@ jobs:
           python-version: '3.11'
 
       # ------------------------------------------------------------
-      # 5) Install vcpkg
+      # 5) Install vcpkg (no opus)
       # ------------------------------------------------------------
       - name: Install vcpkg
         shell: pwsh
@@ -54,22 +54,22 @@ jobs:
           "VCPKG_DEFAULT_TRIPLET=x64-windows-static" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       # ------------------------------------------------------------
-      # 6) Remove opus from vcpkg.json (avoid conflicts!)
+      # 6) Remove opus from vcpkg.json (RustDesk uses FFmpeg-built opus)
       # ------------------------------------------------------------
-      - name: Remove opus dependency (RustDesk uses internal opus)
+      - name: Remove opus dependency
         shell: pwsh
         run: |
           if (Test-Path "vcpkg.json") {
             $json = Get-Content "vcpkg.json" -Raw | ConvertFrom-Json
             $json.dependencies = @($json.dependencies | Where-Object { $_ -ne "opus" })
             $json | ConvertTo-Json -Depth 10 | Set-Content "vcpkg.json" -Encoding UTF8
-            Write-Host "opus removed from vcpkg.json (using internal opus)"
+            Write-Host "opus removed from vcpkg.json"
           }
 
       # ------------------------------------------------------------
-      # 7) Install dependencies via vcpkg (no opus)
+      # 7) Run vcpkg install
       # ------------------------------------------------------------
-      - name: Run vcpkg install (manifest mode)
+      - name: Run vcpkg install
         shell: pwsh
         run: |
           $vcpkg = Join-Path $env:VCPKG_ROOT "vcpkg.exe"
@@ -85,7 +85,7 @@ jobs:
         run: |
           $file = "build.py"
           if (Test-Path $file) {
-            Write-Host "Patching build.py to disable portable build..."
+            Write-Host "Patching build.py to disable portable pack..."
             (Get-Content $file) `
               -replace "def build_portable[\\s\\S]*?def", "def build_portable(*args, **kwargs):`n    return`n`ndef" `
               -replace "if options\\.portable[\\s\\S]*?pass", "# portable disabled in CI" `
@@ -93,15 +93,15 @@ jobs:
           }
 
       # ------------------------------------------------------------
-      # 9) Build RustDesk GUI (no portable)
+      # 9) Build Windows with FFmpeg (important!)
       # ------------------------------------------------------------
-      - name: Build Windows GUI
+      - name: Build RustDesk with FFmpeg (hwcodec)
         shell: pwsh
         run: |
-          python build.py --skip-portable-pack
+          python build.py --hwcodec --skip-portable-pack
 
       # ------------------------------------------------------------
-      # 10) Install WiX Toolset (MSI builder)
+      # 10) Install WiX Toolset
       # ------------------------------------------------------------
       - name: Install WiX Toolset
         shell: pwsh
