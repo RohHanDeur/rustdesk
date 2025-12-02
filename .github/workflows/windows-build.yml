@@ -54,22 +54,22 @@ jobs:
           "VCPKG_DEFAULT_TRIPLET=x64-windows-static" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       # ------------------------------------------------------------
-      # 6) Add opus to vcpkg.json if missing
+      # 6) Remove opus from vcpkg.json (avoid conflicts!)
       # ------------------------------------------------------------
-      - name: Ensure opus dependency exists
+      - name: Remove opus dependency (RustDesk uses internal opus)
         shell: pwsh
         run: |
-          if (-not (Test-Path "vcpkg.json")) { exit 0 }
-          $json = (Get-Content "vcpkg.json" -Raw | ConvertFrom-Json)
-          if ($json.dependencies -notcontains "opus") {
-            $json.dependencies += "opus"
+          if (Test-Path "vcpkg.json") {
+            $json = Get-Content "vcpkg.json" -Raw | ConvertFrom-Json
+            $json.dependencies = @($json.dependencies | Where-Object { $_ -ne "opus" })
             $json | ConvertTo-Json -Depth 10 | Set-Content "vcpkg.json" -Encoding UTF8
+            Write-Host "opus removed from vcpkg.json (using internal opus)"
           }
 
       # ------------------------------------------------------------
-      # 7) Run vcpkg install (manifest mode)
+      # 7) Install dependencies via vcpkg (no opus)
       # ------------------------------------------------------------
-      - name: Run vcpkg install
+      - name: Run vcpkg install (manifest mode)
         shell: pwsh
         run: |
           $vcpkg = Join-Path $env:VCPKG_ROOT "vcpkg.exe"
@@ -78,26 +78,7 @@ jobs:
           Pop-Location
 
       # ------------------------------------------------------------
-      # 8) Patch opus include path for magnum-opus
-      # ------------------------------------------------------------
-      - name: Patch opus include path
-        shell: pwsh
-        run: |
-          $inc = Join-Path $env:VCPKG_ROOT "installed/x64-windows-static/include"
-          $opusDir = Join-Path $inc "opus"
-
-          if (-not (Test-Path $opusDir)) {
-            New-Item -ItemType Directory -Path $opusDir | Out-Null
-          }
-
-          Copy-Item "$inc\opus*.h" $opusDir -Force -ErrorAction SilentlyContinue
-          Copy-Item "$inc\opus_*.h" $opusDir -Force -ErrorAction SilentlyContinue
-
-          Write-Host "Opus include patch complete."
-          Get-ChildItem $opusDir
-
-      # ------------------------------------------------------------
-      # 9) Patch build.py to disable portable build
+      # 8) Disable portable build in build.py
       # ------------------------------------------------------------
       - name: Disable portable build in build.py
         shell: pwsh
@@ -106,13 +87,13 @@ jobs:
           if (Test-Path $file) {
             Write-Host "Patching build.py to disable portable build..."
             (Get-Content $file) `
-              -replace "def build_portable[\s\S]*?def", "def build_portable(*args, **kwargs):`n    return`n`ndef" `
-              -replace "if options\.portable[\s\S]*?pass", "# portable disabled in CI" `
+              -replace "def build_portable[\\s\\S]*?def", "def build_portable(*args, **kwargs):`n    return`n`ndef" `
+              -replace "if options\\.portable[\\s\\S]*?pass", "# portable disabled in CI" `
               | Set-Content $file -Encoding UTF8
           }
 
       # ------------------------------------------------------------
-      # 10) Build RustDesk GUI (portable disabled)
+      # 9) Build RustDesk GUI (no portable)
       # ------------------------------------------------------------
       - name: Build Windows GUI
         shell: pwsh
@@ -120,7 +101,7 @@ jobs:
           python build.py --skip-portable-pack
 
       # ------------------------------------------------------------
-      # 11) Install WiX Toolset for MSI build
+      # 10) Install WiX Toolset (MSI builder)
       # ------------------------------------------------------------
       - name: Install WiX Toolset
         shell: pwsh
@@ -133,7 +114,7 @@ jobs:
           $wixBin | Out-File -FilePath $env:GITHUB_PATH -Append
 
       # ------------------------------------------------------------
-      # 12) Build MSI installer
+      # 11) Build MSI installer
       # ------------------------------------------------------------
       - name: Build Windows MSI
         shell: pwsh
@@ -141,7 +122,7 @@ jobs:
           powershell ./build.ps1 -Configuration Release
 
       # ------------------------------------------------------------
-      # 13) Upload build artifacts
+      # 12) Upload artifacts
       # ------------------------------------------------------------
       - name: Upload EXE + MSI
         uses: actions/upload-artifact@v4
