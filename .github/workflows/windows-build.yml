@@ -11,7 +11,7 @@ jobs:
 
     steps:
       # ------------------------------------------------------------
-      # 1) Git Checkout (submodules 포함)
+      # 1) 소스 체크아웃 (서브모듈 포함)
       # ------------------------------------------------------------
       - name: Checkout source
         uses: actions/checkout@v4
@@ -41,7 +41,7 @@ jobs:
           python-version: "3.11"
 
       # ------------------------------------------------------------
-      # 5) vcpkg 설치 (bootstrap timeout 방지)
+      # 5) vcpkg 설치 (bootstrap 타임아웃 회피)
       # ------------------------------------------------------------
       - name: Install vcpkg (safe mode)
         shell: pwsh
@@ -63,12 +63,15 @@ jobs:
           "VCPKG_DEFAULT_TRIPLET=x64-windows-static" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       # ------------------------------------------------------------
-      # 6) vcpkg.json → opus 자동 추가
+      # 6) vcpkg.json 에 opus dependency 추가
       # ------------------------------------------------------------
       - name: Ensure opus exists in vcpkg.json
         shell: pwsh
         run: |
-          if (-not (Test-Path "vcpkg.json")) { exit 0 }
+          if (-not (Test-Path "vcpkg.json")) {
+            Write-Host "vcpkg.json not found. Skipping opus patch."
+            exit 0
+          }
 
           $json = Get-Content "vcpkg.json" -Raw | ConvertFrom-Json
           if ($null -eq $json.dependencies) {
@@ -77,19 +80,25 @@ jobs:
 
           $depNames = @()
           foreach ($d in $json.dependencies) {
-            if ($d -is [string]) { $depNames += $d }
-            elseif ($d.PSObject.Properties.Name -contains 'name') { $depNames += $d.name }
+            if ($d -is [string]) {
+              $depNames += $d
+            } elseif ($d.PSObject.Properties.Name -contains 'name') {
+              $depNames += $d.name
+            }
           }
 
           if ($depNames -notcontains "opus") {
+            Write-Host "[+] Adding opus to dependencies."
             $json.dependencies += "opus"
             $json | ConvertTo-Json -Depth 10 | Set-Content "vcpkg.json" -Encoding UTF8
+          } else {
+            Write-Host "[OK] opus already exists."
           }
 
       # ------------------------------------------------------------
-      # 7) manifest 기반 vcpkg install (강제 모드)
+      # 7) vcpkg manifest 기반 설치
       # ------------------------------------------------------------
-      - name: Run vcpkg install (strict manifest mode)
+      - name: Run vcpkg install (manifest mode)
         shell: pwsh
         run: |
           $vcpkg = Join-Path $env:VCPKG_ROOT "vcpkg.exe"
@@ -101,7 +110,7 @@ jobs:
             --x-install-root="$env:VCPKG_ROOT/installed"
 
       # ------------------------------------------------------------
-      # 8) include/lib PATH 적용
+      # 8) include/lib 경로 PATH에 추가 (magnum-opus용)
       # ------------------------------------------------------------
       - name: Add vcpkg include/lib to PATH
         shell: pwsh
@@ -110,7 +119,7 @@ jobs:
           echo "$env:VCPKG_ROOT\installed\x64-windows-static\lib" | Out-File -FilePath $env:GITHUB_PATH -Append
 
       # ------------------------------------------------------------
-      # 9) confy 깨진 리비전 해결
+      # 9) confy 깨진 리비전 문제 회피
       # ------------------------------------------------------------
       - name: Fix confy broken revision
         shell: pwsh
@@ -119,21 +128,41 @@ jobs:
           cargo update -p confy || cargo update
 
       # ------------------------------------------------------------
-      # 10) RustDesk Windows GUI 빌드 (portable pack 스킵)
+      # 10) portable generate.py 를 CI용 no-op 으로 패치
+      #     -> win7 portable 생성 단계 완전 비활성화
       # ------------------------------------------------------------
-      - name: Build Windows GUI (skip portable pack)
+      - name: Patch portable generate.py (disable portable in CI)
         shell: pwsh
         run: |
-          python build.py --skip-portable-pack
+          $portable = "libs\portable\generate.py"
+          if (Test-Path $portable) {
+            Write-Host "[+] Patching libs/portable/generate.py to no-op in CI"
+@"
+import sys
+print("Skipping portable generate.py in CI (no-op).")
+sys.exit(0)
+"@ | Set-Content $portable -Encoding UTF8
+          } else {
+            Write-Host "libs/portable/generate.py not found, skipping patch."
+          }
 
       # ------------------------------------------------------------
-      # 11) WiX Toolset 설치
+      # 11) RustDesk Windows GUI 빌드
+      #     (portable 스크립트는 위에서 이미 무력화됨)
+      # ------------------------------------------------------------
+      - name: Build Windows GUI
+        shell: pwsh
+        run: |
+          python build.py
+
+      # ------------------------------------------------------------
+      # 12) WiX Toolset 설치 (MSI 빌드용)
       # ------------------------------------------------------------
       - name: Install WiX Toolset
         shell: pwsh
         run: |
           $wixRoot = "$env:ProgramFiles\WixToolsetV3"
-          New-Item -ItemType Directory -Force -Path $wixRoot | Out-File -Force
+          New-Item -ItemType Directory -Force -Path $wixRoot | Out-Null
 
           Invoke-WebRequest -Uri "https://wixtoolset.org/releases/v3.11.2/wix311-binaries.zip" -OutFile wix.zip
           Expand-Archive wix.zip -DestinationPath $wixRoot -Force
@@ -142,7 +171,7 @@ jobs:
           $wixBin | Out-File -FilePath $env:GITHUB_PATH -Append
 
       # ------------------------------------------------------------
-      # 12) MSI 빌드
+      # 13) MSI 빌드
       # ------------------------------------------------------------
       - name: Build Windows MSI
         shell: pwsh
@@ -150,7 +179,7 @@ jobs:
           powershell ./build.ps1 -Configuration Release
 
       # ------------------------------------------------------------
-      # 13) EXE + MSI 업로드
+      # 14) 결과물 업로드 (EXE + MSI)
       # ------------------------------------------------------------
       - name: Upload EXE + MSI
         uses: actions/upload-artifact@v4
