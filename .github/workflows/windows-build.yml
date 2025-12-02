@@ -13,7 +13,7 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Rust toolchain
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -26,7 +26,7 @@ jobs:
       - name: Install MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Install vcpkg (manifest mode)
+      - name: Install vcpkg
         shell: pwsh
         run: |
           $vcpkgPath = Join-Path $env:RUNNER_TEMP "vcpkg"
@@ -35,7 +35,7 @@ jobs:
           "VCPKG_ROOT=$vcpkgPath" | Out-File -FilePath $env:GITHUB_ENV -Append
           "VCPKG_DEFAULT_TRIPLET=x64-windows-static" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Add opus to vcpkg.json (manifest mode fix)
+      - name: Add opus to vcpkg.json
         shell: pwsh
         run: |
           $json = Get-Content "vcpkg.json" -Raw | ConvertFrom-Json
@@ -44,28 +44,29 @@ jobs:
             $json | ConvertTo-Json -Depth 10 | Set-Content "vcpkg.json" -Encoding UTF8
           }
 
-      - name: Install dependencies from vcpkg.json
+      - name: Install dependencies via manifest
         shell: pwsh
         run: |
           $vcpkg = "$env:VCPKG_ROOT/vcpkg.exe"
           & $vcpkg install --triplet x64-windows-static
 
-      - name: Disable portable pack (CI-safe)
+      - name: Disable portable generate.py (CI safe)
         shell: pwsh
         run: |
           $portable = "libs/portable/generate.py"
-          @'
-import sys
-print("Skipping portable generate.py in CI")
-sys.exit(0)
-'@ | Set-Content $portable -Encoding UTF8
+          if (Test-Path $portable) {
+            Remove-Item $portable -Force
+            Add-Content $portable "import sys"
+            Add-Content $portable "print('Skipping portable generate.py in CI')"
+            Add-Content $portable "sys.exit(0)"
+          }
 
       - name: Build RustDesk (GUI + hwcodec)
         shell: pwsh
         run: |
           python build.py --hwcodec
 
-      - name: Upload artifacts
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: rustdesk-windows-build
