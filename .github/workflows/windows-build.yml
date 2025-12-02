@@ -11,7 +11,7 @@ jobs:
 
     steps:
       # ------------------------------------------------------------
-      # 1) 소스 체크아웃 (서브모듈 포함)
+      # 1) Git Checkout
       # ------------------------------------------------------------
       - name: Checkout source
         uses: actions/checkout@v4
@@ -27,7 +27,7 @@ jobs:
           components: rustfmt, clippy
 
       # ------------------------------------------------------------
-      # 3) MSBuild 설치 (WiX 빌드용)
+      # 3) MSBuild 설치
       # ------------------------------------------------------------
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
@@ -41,7 +41,7 @@ jobs:
           python-version: "3.11"
 
       # ------------------------------------------------------------
-      # 5) vcpkg 설치 (bootstrap 타임아웃 회피)
+      # 5) vcpkg 설치 (bootstrap timeout 방지)
       # ------------------------------------------------------------
       - name: Install vcpkg (safe mode)
         shell: pwsh
@@ -53,64 +53,53 @@ jobs:
           $exeUrl = "https://github.com/microsoft/vcpkg-tool/releases/latest/download/vcpkg.exe"
           $exeDst = Join-Path $vcpkgPath "vcpkg.exe"
 
-          Write-Host "[+] Downloading vcpkg.exe..."
           Invoke-WebRequest -Uri $exeUrl -OutFile $exeDst -UseBasicParsing
-
-          Write-Host "[+] Running bootstrap"
           & "$vcpkgPath\bootstrap-vcpkg.bat"
 
           "VCPKG_ROOT=$vcpkgPath" | Out-File -FilePath $env:GITHUB_ENV -Append
           "VCPKG_DEFAULT_TRIPLET=x64-windows-static" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       # ------------------------------------------------------------
-      # 6) vcpkg.json 에 opus dependency 추가
+      # 6) vcpkg.json → opus dependency 추가
       # ------------------------------------------------------------
       - name: Ensure opus exists in vcpkg.json
         shell: pwsh
         run: |
-          if (-not (Test-Path "vcpkg.json")) {
-            Write-Host "vcpkg.json not found. Skipping opus patch."
-            exit 0
-          }
+          if (-not (Test-Path "vcpkg.json")) { exit 0 }
 
           $json = Get-Content "vcpkg.json" -Raw | ConvertFrom-Json
+
           if ($null -eq $json.dependencies) {
             $json | Add-Member -MemberType NoteProperty -Name dependencies -Value @()
           }
 
           $depNames = @()
           foreach ($d in $json.dependencies) {
-            if ($d -is [string]) {
-              $depNames += $d
-            } elseif ($d.PSObject.Properties.Name -contains 'name') {
-              $depNames += $d.name
-            }
+            if ($d -is [string]) { $depNames += $d }
+            elseif ($d.PSObject.Properties.Name -contains 'name') { $depNames += $d.name }
           }
 
           if ($depNames -notcontains "opus") {
-            Write-Host "[+] Adding opus to dependencies."
+            Write-Host "Adding opus to vcpkg.json"
             $json.dependencies += "opus"
             $json | ConvertTo-Json -Depth 10 | Set-Content "vcpkg.json" -Encoding UTF8
-          } else {
-            Write-Host "[OK] opus already exists."
           }
 
       # ------------------------------------------------------------
-      # 7) vcpkg manifest 기반 설치
+      # 7) vcpkg install (manifest 모드 강제)
       # ------------------------------------------------------------
       - name: Run vcpkg install (manifest mode)
         shell: pwsh
         run: |
           $vcpkg = Join-Path $env:VCPKG_ROOT "vcpkg.exe"
           cd "$env:GITHUB_WORKSPACE"
-
           & $vcpkg install `
             --triplet x64-windows-static `
             --x-manifest-root="$env:GITHUB_WORKSPACE" `
             --x-install-root="$env:VCPKG_ROOT/installed"
 
       # ------------------------------------------------------------
-      # 8) include/lib 경로 PATH에 추가 (magnum-opus용)
+      # 8) include/lib PATH 적용
       # ------------------------------------------------------------
       - name: Add vcpkg include/lib to PATH
         shell: pwsh
@@ -119,36 +108,35 @@ jobs:
           echo "$env:VCPKG_ROOT\installed\x64-windows-static\lib" | Out-File -FilePath $env:GITHUB_PATH -Append
 
       # ------------------------------------------------------------
-      # 9) confy 깨진 리비전 문제 회피
+      # 9) confy 리비전 깨짐 해결
       # ------------------------------------------------------------
-      - name: Fix confy broken revision
+      - name: Fix confy revision
         shell: pwsh
         run: |
           cd "$env:GITHUB_WORKSPACE"
           cargo update -p confy || cargo update
 
       # ------------------------------------------------------------
-      # 10) portable generate.py 를 CI용 no-op 으로 패치
-      #     -> win7 portable 생성 단계 완전 비활성화
+      # 10) generate.py → CI 전용 no-op 패치
+      #     (portable(win7) 생성 단계 완전 비활성화)
       # ------------------------------------------------------------
       - name: Patch portable generate.py (disable portable in CI)
         shell: pwsh
         run: |
           $portable = "libs\portable\generate.py"
           if (Test-Path $portable) {
-            Write-Host "[+] Patching libs/portable/generate.py to no-op in CI"
-@"
+            Write-Host "[+] Overwriting generate.py to no-op in CI"
+@'
 import sys
 print("Skipping portable generate.py in CI (no-op).")
 sys.exit(0)
-"@ | Set-Content $portable -Encoding UTF8
+'@ | Set-Content $portable -Encoding UTF8
           } else {
-            Write-Host "libs/portable/generate.py not found, skipping patch."
+            Write-Host "generate.py not found, skipping."
           }
 
       # ------------------------------------------------------------
-      # 11) RustDesk Windows GUI 빌드
-      #     (portable 스크립트는 위에서 이미 무력화됨)
+      # 11) RustDesk GUI 빌드
       # ------------------------------------------------------------
       - name: Build Windows GUI
         shell: pwsh
@@ -156,17 +144,15 @@ sys.exit(0)
           python build.py
 
       # ------------------------------------------------------------
-      # 12) WiX Toolset 설치 (MSI 빌드용)
+      # 12) WiX 설치
       # ------------------------------------------------------------
       - name: Install WiX Toolset
         shell: pwsh
         run: |
           $wixRoot = "$env:ProgramFiles\WixToolsetV3"
           New-Item -ItemType Directory -Force -Path $wixRoot | Out-Null
-
           Invoke-WebRequest -Uri "https://wixtoolset.org/releases/v3.11.2/wix311-binaries.zip" -OutFile wix.zip
           Expand-Archive wix.zip -DestinationPath $wixRoot -Force
-
           $wixBin = Join-Path $wixRoot "bin"
           $wixBin | Out-File -FilePath $env:GITHUB_PATH -Append
 
@@ -179,7 +165,7 @@ sys.exit(0)
           powershell ./build.ps1 -Configuration Release
 
       # ------------------------------------------------------------
-      # 14) 결과물 업로드 (EXE + MSI)
+      # 14) 아티팩트 업로드 (EXE + MSI)
       # ------------------------------------------------------------
       - name: Upload EXE + MSI
         uses: actions/upload-artifact@v4
