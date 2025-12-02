@@ -73,25 +73,46 @@ jobs:
         shell: pwsh
         run: |
           $vcpkg = Join-Path $env:VCPKG_ROOT "vcpkg.exe"
+          Push-Location "$env:GITHUB_WORKSPACE"
           & $vcpkg install --triplet x64-windows-static
+          Pop-Location
 
       # ------------------------------------------------------------
-      # 8) Disable portable build inside build.py
+      # 8) Patch opus include path for magnum-opus
       # ------------------------------------------------------------
-      - name: Patch build.py to disable portable build
+      - name: Patch opus include path
         shell: pwsh
         run: |
-          $build = "build.py"
-          if (Test-Path $build) {
-            Write-Host "[+] Disabling portable functions in build.py"
-            (Get-Content $build) `
-              -replace "def build_portable[^\}]*", "def build_portable(*args, **kwargs):`n    return" `
-              -replace "if options\.portable[^\}]*", "# portable disabled in CI" `
-              | Set-Content $build -Encoding UTF8
+          $inc = Join-Path $env:VCPKG_ROOT "installed/x64-windows-static/include"
+          $opusDir = Join-Path $inc "opus"
+
+          if (-not (Test-Path $opusDir)) {
+            New-Item -ItemType Directory -Path $opusDir | Out-Null
+          }
+
+          Copy-Item "$inc\opus*.h" $opusDir -Force -ErrorAction SilentlyContinue
+          Copy-Item "$inc\opus_*.h" $opusDir -Force -ErrorAction SilentlyContinue
+
+          Write-Host "Opus include patch complete."
+          Get-ChildItem $opusDir
+
+      # ------------------------------------------------------------
+      # 9) Patch build.py to disable portable build
+      # ------------------------------------------------------------
+      - name: Disable portable build in build.py
+        shell: pwsh
+        run: |
+          $file = "build.py"
+          if (Test-Path $file) {
+            Write-Host "Patching build.py to disable portable build..."
+            (Get-Content $file) `
+              -replace "def build_portable[\s\S]*?def", "def build_portable(*args, **kwargs):`n    return`n`ndef" `
+              -replace "if options\.portable[\s\S]*?pass", "# portable disabled in CI" `
+              | Set-Content $file -Encoding UTF8
           }
 
       # ------------------------------------------------------------
-      # 9) Build Windows GUI (no portable)
+      # 10) Build RustDesk GUI (portable disabled)
       # ------------------------------------------------------------
       - name: Build Windows GUI
         shell: pwsh
@@ -99,7 +120,7 @@ jobs:
           python build.py --skip-portable-pack
 
       # ------------------------------------------------------------
-      # 10) Install WiX Toolset (MSI builder)
+      # 11) Install WiX Toolset for MSI build
       # ------------------------------------------------------------
       - name: Install WiX Toolset
         shell: pwsh
@@ -112,7 +133,7 @@ jobs:
           $wixBin | Out-File -FilePath $env:GITHUB_PATH -Append
 
       # ------------------------------------------------------------
-      # 11) Build MSI Installer
+      # 12) Build MSI installer
       # ------------------------------------------------------------
       - name: Build Windows MSI
         shell: pwsh
@@ -120,7 +141,7 @@ jobs:
           powershell ./build.ps1 -Configuration Release
 
       # ------------------------------------------------------------
-      # 12) Upload artifacts
+      # 13) Upload build artifacts
       # ------------------------------------------------------------
       - name: Upload EXE + MSI
         uses: actions/upload-artifact@v4
