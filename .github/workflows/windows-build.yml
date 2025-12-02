@@ -11,7 +11,7 @@ jobs:
 
     steps:
       # ------------------------------------------------------------
-      # 1) Git Checkout
+      # 1) 소스 체크아웃
       # ------------------------------------------------------------
       - name: Checkout source
         uses: actions/checkout@v4
@@ -41,54 +41,49 @@ jobs:
           python-version: "3.11"
 
       # ------------------------------------------------------------
-      # 5) vcpkg 설치 (bootstrap timeout 방지)
+      # 5) vcpkg 설치
       # ------------------------------------------------------------
-      - name: Install vcpkg (safe mode)
+      - name: Install vcpkg (bootstrap-safe)
         shell: pwsh
         run: |
           $vcpkgPath = Join-Path $env:RUNNER_TEMP "vcpkg"
           git clone https://github.com/microsoft/vcpkg $vcpkgPath
 
-          # vcpkg.exe 직접 다운로드
           $exeUrl = "https://github.com/microsoft/vcpkg-tool/releases/latest/download/vcpkg.exe"
           $exeDst = Join-Path $vcpkgPath "vcpkg.exe"
-
           Invoke-WebRequest -Uri $exeUrl -OutFile $exeDst -UseBasicParsing
+
           & "$vcpkgPath\bootstrap-vcpkg.bat"
 
           "VCPKG_ROOT=$vcpkgPath" | Out-File -FilePath $env:GITHUB_ENV -Append
           "VCPKG_DEFAULT_TRIPLET=x64-windows-static" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       # ------------------------------------------------------------
-      # 6) vcpkg.json → opus dependency 추가
+      # 6) opus dependency 자동 추가
       # ------------------------------------------------------------
       - name: Ensure opus exists in vcpkg.json
         shell: pwsh
         run: |
-          if (-not (Test-Path "vcpkg.json")) { exit 0 }
+          if (!(Test-Path "vcpkg.json")) { exit 0 }
 
           $json = Get-Content "vcpkg.json" -Raw | ConvertFrom-Json
+          if ($null -eq $json.dependencies) { $json | Add-Member dependencies @() }
 
-          if ($null -eq $json.dependencies) {
-            $json | Add-Member -MemberType NoteProperty -Name dependencies -Value @()
-          }
-
-          $depNames = @()
+          $deps = @()
           foreach ($d in $json.dependencies) {
-            if ($d -is [string]) { $depNames += $d }
-            elseif ($d.PSObject.Properties.Name -contains 'name') { $depNames += $d.name }
+            if ($d -is [string]) { $deps += $d }
+            elseif ($d.PSObject.Properties.Name -contains 'name') { $deps += $d.name }
           }
 
-          if ($depNames -notcontains "opus") {
-            Write-Host "Adding opus to vcpkg.json"
+          if ($deps -notcontains "opus") {
             $json.dependencies += "opus"
             $json | ConvertTo-Json -Depth 10 | Set-Content "vcpkg.json" -Encoding UTF8
           }
 
       # ------------------------------------------------------------
-      # 7) vcpkg install (manifest 모드 강제)
+      # 7) vcpkg install
       # ------------------------------------------------------------
-      - name: Run vcpkg install (manifest mode)
+      - name: Run vcpkg install
         shell: pwsh
         run: |
           $vcpkg = Join-Path $env:VCPKG_ROOT "vcpkg.exe"
@@ -99,40 +94,37 @@ jobs:
             --x-install-root="$env:VCPKG_ROOT/installed"
 
       # ------------------------------------------------------------
-      # 8) include/lib PATH 적용
+      # 8) include/lib PATH 추가
       # ------------------------------------------------------------
       - name: Add vcpkg include/lib to PATH
         shell: pwsh
         run: |
-          echo "$env:VCPKG_ROOT\installed\x64-windows-static\include" | Out-File -FilePath $env:GITHUB_PATH -Append
-          echo "$env:VCPKG_ROOT\installed\x64-windows-static\lib" | Out-File -FilePath $env:GITHUB_PATH -Append
+          echo "$env:VCPKG_ROOT\installed\x64-windows-static\include" >> $env:GITHUB_PATH
+          echo "$env:VCPKG_ROOT\installed\x64-windows-static\lib" >> $env:GITHUB_PATH
 
       # ------------------------------------------------------------
-      # 9) confy 리비전 깨짐 해결
+      # 9) confy 리비전 문제 해결
       # ------------------------------------------------------------
       - name: Fix confy revision
         shell: pwsh
         run: |
-          cd "$env:GITHUB_WORKSPACE"
           cargo update -p confy || cargo update
 
       # ------------------------------------------------------------
-      # 10) generate.py → CI 전용 no-op 패치
-      #     (portable(win7) 생성 단계 완전 비활성화)
+      # 10) generate.py → CI 전용 no-op으로 덮어쓰기
+      #     (YAML 안전한 echo 방식 사용)
       # ------------------------------------------------------------
       - name: Patch portable generate.py (disable portable in CI)
         shell: pwsh
         run: |
           $portable = "libs\portable\generate.py"
           if (Test-Path $portable) {
-            Write-Host "[+] Overwriting generate.py to no-op in CI"
-@'
-import sys
-print("Skipping portable generate.py in CI (no-op).")
-sys.exit(0)
-'@ | Set-Content $portable -Encoding UTF8
+            echo "import sys" >  $portable
+            echo "print('Skipping portable generate.py in CI (no-op).')" >> $portable
+            echo "sys.exit(0)" >> $portable
+            Write-Host "[+] generate.py patched to no-op"
           } else {
-            Write-Host "generate.py not found, skipping."
+            Write-Host "generate.py not found"
           }
 
       # ------------------------------------------------------------
@@ -151,10 +143,11 @@ sys.exit(0)
         run: |
           $wixRoot = "$env:ProgramFiles\WixToolsetV3"
           New-Item -ItemType Directory -Force -Path $wixRoot | Out-Null
+
           Invoke-WebRequest -Uri "https://wixtoolset.org/releases/v3.11.2/wix311-binaries.zip" -OutFile wix.zip
           Expand-Archive wix.zip -DestinationPath $wixRoot -Force
-          $wixBin = Join-Path $wixRoot "bin"
-          $wixBin | Out-File -FilePath $env:GITHUB_PATH -Append
+
+          echo "$wixRoot\bin" >> $env:GITHUB_PATH
 
       # ------------------------------------------------------------
       # 13) MSI 빌드
@@ -165,7 +158,7 @@ sys.exit(0)
           powershell ./build.ps1 -Configuration Release
 
       # ------------------------------------------------------------
-      # 14) 아티팩트 업로드 (EXE + MSI)
+      # 14) 결과물 업로드
       # ------------------------------------------------------------
       - name: Upload EXE + MSI
         uses: actions/upload-artifact@v4
