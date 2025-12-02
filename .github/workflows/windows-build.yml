@@ -5,7 +5,7 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     steps:
       - name: Checkout
@@ -16,7 +16,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
+          components: rustfmt, clippy
 
       - name: Install Python
         uses: actions/setup-python@v5
@@ -26,7 +26,7 @@ jobs:
       - name: Install MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Install vcpkg
+      - name: Install vcpkg (manifest mode)
         shell: pwsh
         run: |
           $vcpkgPath = Join-Path $env:RUNNER_TEMP "vcpkg"
@@ -35,26 +35,40 @@ jobs:
           "VCPKG_ROOT=$vcpkgPath" | Out-File -FilePath $env:GITHUB_ENV -Append
           "VCPKG_DEFAULT_TRIPLET=x64-windows-static" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Install vcpkg dependencies (Opus, FFmpeg, etc)
+      - name: Add opus to vcpkg.json (manifest mode fix)
         shell: pwsh
         run: |
-          vcpkg install opus:x64-windows-static
-          vcpkg install libvpx:x64-windows-static
-          vcpkg install ffmpeg[x264]:x64-windows-static
+          $json = Get-Content "vcpkg.json" -Raw | ConvertFrom-Json
+          if (!($json.dependencies -contains "opus")) {
+            $json.dependencies += "opus"
+            $json | ConvertTo-Json -Depth 10 | Set-Content "vcpkg.json" -Encoding UTF8
+          }
 
-      - name: Build RustDesk (inline OFF / hwcodec ON)
+      - name: Install dependencies from vcpkg.json
         shell: pwsh
         run: |
-          python build.py -f 0 --hwcodec --skip-portable-pack
+          $vcpkg = "$env:VCPKG_ROOT/vcpkg.exe"
+          & $vcpkg install --triplet x64-windows-static
+
+      - name: Disable portable pack (CI-safe)
+        shell: pwsh
+        run: |
+          $portable = "libs/portable/generate.py"
+          @'
+import sys
+print("Skipping portable generate.py in CI")
+sys.exit(0)
+'@ | Set-Content $portable -Encoding UTF8
+
+      - name: Build RustDesk (GUI + hwcodec)
+        shell: pwsh
+        run: |
+          python build.py --hwcodec
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: rustdesk-windows-build
           path: |
-            target/release/rustdesk.exe
-            target/release/service.exe
-            *.exe
-            *.msi
-
-            #32
+            target/release/*.exe
+            target/release/*.msi
